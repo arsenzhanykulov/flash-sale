@@ -99,3 +99,46 @@ hot reload через volume); тесты на реальном Postgres в от
 - Hot reload: правка `app/main.py` → в логах `WatchFiles detected changes ... Reloading`.
 **Дальше:** модели SQLAlchemy по `docs/DATA_MODEL.md`, Alembic и первая миграция
 (включая CHECK `sold + held <= quantity` и частичный уникальный индекс по броням).
+
+## 2026-10-09 02:39 — Модели SQLAlchemy и первая миграция
+**Ветка:** `feat/db-schema`
+**Сделано:** Alembic с async-конфигурацией (`alembic.ini`, `migrations/env.py`), модели всех
+7 таблиц по `DATA_MODEL.md` (`app/models/`, по модулю на таблицу + `base.py`), первая миграция
+`223134f5b6cc_initial_schema`; тестовая фикстура накатывает схему миграциями; 3 новых теста.
+Зависимость `alembic` 1.20.0, `uv.lock` перегенерирован.
+**Решения:** ADR-012 (два режима env.py, URL из настроек, `naming_convention`,
+схема в тестах — миграциями, а не `create_all`).
+- Статусы — `text` + CHECK, без нативных ENUM; значения живут в `StrEnum` рядом с моделью,
+  CHECK собирается из него, чтобы схема и код не разъехались.
+- `reservations.expires_at` — `NOT NULL` без server default: TTL брони это бизнес-правило,
+  в схеме его смена требовала бы миграции.
+- `updated_at` — `server_default now()` + ORM-`onupdate`, без триггера в БД; в явном SQL
+  критичных операций `updated_at = now()` придётся писать руками.
+- FK без `ON DELETE CASCADE`: брони, заказы и платежи каскадом не удаляются.
+- Согласованы три добавления к `DATA_MODEL.md`, документ обновлён: `orders.currency NOT NULL`,
+  `CHECK (email = lower(email))`, `CHECK (amount_minor > 0)`.
+**Агент:** Claude спросил про три неоднозначности в документе до начала работы, а не додумал.
+Autogenerate в Alembic 1.20 неожиданно подхватил и CHECK, и частичный индекс с `postgresql_where` —
+терять ничего не пришлось, но миграция всё равно сверена с документом построчно и переписана
+в читаемый вид (содержимое то же, `alembic check` это подтверждает). Сам нашёл и исправил изъян
+в своём тесте: `session.rollback()` после ожидаемой ошибки сносил и данные фикстуры —
+переделано на SAVEPOINT (`begin_nested`).
+**Проверка:**
+- `alembic upgrade head` на рабочей базе; `alembic current` → `223134f5b6cc (head)`;
+  `alembic check` → «No new upgrade operations detected» (модели и БД совпадают).
+- Схема осмотрена в psql: 11 CHECK на месте (включая
+  `ck_sales_not_oversold`, `ck_sales_period_valid`, `ck_users_email_lowercase`,
+  `ck_orders_amount_positive`), частичный индекс
+  `uq_reservations_sale_id_user_id_active ... WHERE status = ANY (ARRAY['held','paying','paid'])`,
+  индекс `ix_reservations_status_expires_at`, уникальные `uq_orders_reservation_id`,
+  `uq_payments_order_id`, `uq_payments_idempotency_key`, `uq_outbox_dedup_key`.
+- `downgrade base` → `upgrade head` на **рабочей** базе: прошло, 7 таблиц вернулись,
+  `alembic check` чистый. **Это разовая проверка на пустой базе; дальше downgrade
+  на рабочей базе не делаем — только на тестовой.**
+- `pytest -q` → 5 passed: round-trip миграций, CHECK на оверсейле, частичный индекс
+  (вторая активная бронь падает, после `expired` проходит) + 2 прежних теста /health.
+- Тесты проверены на «непустоту»: с временно снесёнными `ck_sales_not_oversold`
+  и `uq_reservations_sale_id_user_id_active` оба теста падают с `DID NOT RAISE IntegrityError`.
+- `ruff check .` — All checks passed; `ruff format --check .` — 26 files already formatted.
+**Дальше:** резерв брони атомарным условным UPDATE и эндпоинты распродаж — начинать с теста
+на конкурентные запросы за последнюю единицу.

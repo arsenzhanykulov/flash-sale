@@ -57,6 +57,9 @@ services:
       # Hot reload: uvicorn --reload видит правки кода без пересборки образа.
       - ./backend/app:/app/app
       - ./backend/tests:/app/tests
+      # Новые ревизии Alembic подхватываются без пересборки образа.
+      - ./backend/migrations:/app/migrations
+      - ./backend/alembic.ini:/app/alembic.ini
     healthcheck:
       # В slim-образе нет curl, обходимся stdlib.
       test:

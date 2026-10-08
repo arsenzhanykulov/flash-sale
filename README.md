@@ -31,10 +31,15 @@ docker compose up --build
 ## Разработка
 
 ```bash
-docker compose exec backend pytest -q        # тесты
-docker compose exec backend ruff check .     # линт
-docker compose exec backend ruff format .    # форматирование
+docker compose exec backend alembic upgrade head   # миграции
+docker compose exec backend alembic check          # схема БД и модели совпадают?
+docker compose exec backend pytest -q              # тесты
+docker compose exec backend ruff check .           # линт
+docker compose exec backend ruff format .          # форматирование
 ```
+
+Новая миграция: `docker compose exec backend alembic revision --autogenerate -m "<msg>"`.
+Существующие миграции не редактируем.
 
 Код backend смонтирован в контейнер, `uvicorn --reload` подхватывает правки без пересборки.
 
