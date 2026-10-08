@@ -22,9 +22,26 @@ docker compose up --build
 
 | Сервис | Адрес | Назначение |
 |---|---|---|
+| Backend | http://localhost:8000 | API (`/health`) |
+| Swagger | http://localhost:8000/docs | живая документация API |
 | PostgreSQL | `localhost:${POSTGRES_PORT}` | база данных |
 | Mailpit — SMTP | `localhost:1025` | приём писем от backend |
 | Mailpit — веб-UI | http://localhost:8025 | просмотр отправленных писем |
+
+## Разработка
+
+```bash
+docker compose exec backend pytest -q        # тесты
+docker compose exec backend ruff check .     # линт
+docker compose exec backend ruff format .    # форматирование
+```
+
+Код backend смонтирован в контейнер, `uvicorn --reload` подхватывает правки без пересборки.
+
+Тесты идут на реальном Postgres в отдельной базе `flash_sale_test` (пересоздаётся
+перед каждым прогоном и удаляется после). Рабочая база не затрагивается: имя тестовой
+обязано заканчиваться на `_test` и отличаться от базы из `DATABASE_URL`, иначе тесты
+падают, не выполнив ни одного запроса. Адрес можно переопределить через `TEST_DATABASE_URL`.
 
 ## Документация
 
