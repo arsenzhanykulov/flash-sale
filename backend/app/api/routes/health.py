@@ -2,16 +2,11 @@
 
 from fastapi import APIRouter, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 
+from app.api.schemas.health import HealthResponse
 from app.services.health import ping_db
 
 router = APIRouter(tags=["health"])
-
-
-class HealthResponse(BaseModel):
-    status: str
-    database: str
 
 
 @router.get(

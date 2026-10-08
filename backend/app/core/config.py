@@ -29,6 +29,12 @@ class Settings(BaseSettings):
 
     db_echo: bool = False
 
+    # Секрет подписи токенов. Дефолта нет намеренно: пустой секрет должен
+    # ронять старт, а не молча подписывать токены предсказуемым ключом.
+    jwt_secret: str
+    jwt_algorithm: str = "HS256"
+    access_token_ttl_minutes: int = 1440
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors_origins(cls, value: Any) -> Any:

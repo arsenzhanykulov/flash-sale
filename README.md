@@ -22,11 +22,47 @@ docker compose up --build
 
 | Сервис | Адрес | Назначение |
 |---|---|---|
-| Backend | http://localhost:8000 | API (`/health`) |
+| Backend | http://localhost:8000 | API (`/health`, `/api/...`) |
 | Swagger | http://localhost:8000/docs | живая документация API |
 | PostgreSQL | `localhost:${POSTGRES_PORT}` | база данных |
 | Mailpit — SMTP | `localhost:1025` | приём писем от backend |
 | Mailpit — веб-UI | http://localhost:8025 | просмотр отправленных писем |
+
+## Демо-данные
+
+```bash
+docker compose exec backend python -m app.scripts.seed
+docker compose exec backend python -m app.scripts.seed --quantity 5 --start-in 2 --duration 30
+```
+
+Создаёт магазин `shop@example.com`, товар, покупателей `buyer1@example.com`
+и `buyer2@example.com` и распродажу. Аргументы: `--quantity` (по умолчанию 5),
+`--start-in` — через сколько минут старт (2; отрицательное значение — распродажа
+уже идёт), `--duration` — длительность в минутах (30). Окно считается от `now()`
+в БД, а не от часов машины.
+
+**Повторный запуск не ломается и не плодит сущности.** Правило переиспользования:
+
+- пользователи и товар находятся по постоянным email и названию;
+- распродажа переиспользуется только **своя** — созданная по seed-товару — и только
+  если по ней **ещё нет броней**: тогда обновляются окно и количество, счётчики там нулевые.
+  Если брони есть, создаётся новая распродажа: обнулять `sold`/`held` у распродажи
+  с бронями нельзя, счётчики разъехались бы со строками в `reservations` (ADR-002).
+  Чужие распродажи seed не трогает.
+
+## Вход
+
+Пароля нет (ADR-007): `POST /api/auth/login` с email отдаёт JWT, неизвестный email
+становится покупателем. Токен передаётся как `Authorization: Bearer <token>`,
+текущего пользователя показывает `GET /api/auth/me`.
+
+```bash
+curl -s -X POST http://localhost:8000/api/auth/login \
+  -H 'Content-Type: application/json' -d '{"email":"buyer1@example.com"}'
+```
+
+`JWT_SECRET` в `.env.example` — значение для локальной разработки, в продакшене
+меняется (`openssl rand -hex 32`). Дефолта в коде нет: без секрета приложение не стартует.
 
 ## Разработка
 
