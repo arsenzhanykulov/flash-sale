@@ -1,0 +1,47 @@
+name: flash_sale
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Инвариант 9: время в БД — UTC. Сервер — источник now() для всей логики.
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      # Только порт на хосте; внутри сети compose всегда 5432.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # $$ — экранирование для compose: переменную подставляет shell внутри контейнера.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  mailpit:
+    image: axllent/mailpit:v1.31.4
+    restart: unless-stopped
+    environment:
+      # Dev-SMTP без TLS и с любым логином: бэкенду не нужны настоящие креды.
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+      TZ: UTC
+    ports:
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"  # SMTP
+      - "${MAILPIT_UI_PORT:-8025}:8025"    # веб-UI и API
+    healthcheck:
+      # В образе нет curl; mailpit умеет проверять себя сам.
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  pgdata:
