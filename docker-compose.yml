@@ -11,9 +11,9 @@ services:
       # Инвариант 9: время в БД — UTC. Сервер — источник now() для всей логики.
       TZ: UTC
       PGTZ: UTC
-    ports:
-      # Только порт на хосте; внутри сети compose всегда 5432.
-      - "${POSTGRES_PORT:-5432}:5432"
+    # Порт на хост намеренно не публикуется (ADR-017): ни приложение, ни тесты
+    # его не используют, а занятый 5432 ломал бы запуск на чистой машине.
+    # Нужен внешний psql — скопируйте docker-compose.override.example.yml.
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -89,6 +89,15 @@ services:
       # Анонимный том обязателен: монтирование папки с хоста поверх /app
       # иначе скрыло бы node_modules, установленные в образе.
       - /app/node_modules
+    healthcheck:
+      # Нужен, чтобы `docker compose up --wait` (make up) не возвращал
+      # управление раньше, чем dev-сервер действительно отвечает.
+      # wget есть в busybox образа node:alpine.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:5173/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
 
 volumes:
   pgdata:
