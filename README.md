@@ -22,6 +22,7 @@ docker compose up --build
 
 | Сервис | Адрес | Назначение |
 |---|---|---|
+| Frontend | http://localhost:5173 | витрина |
 | Backend | http://localhost:8000 | API (`/health`, `/api/...`) |
 | Swagger | http://localhost:8000/docs | живая документация API |
 | PostgreSQL | `localhost:${POSTGRES_PORT}` | база данных |
@@ -65,6 +66,30 @@ curl -s -X POST http://localhost:8000/api/auth/login \
 меняется (`openssl rand -hex 32`). Дефолта в коде нет: без секрета приложение не стартует.
 
 ## Разработка
+
+### Фронтенд
+
+Отдельный сервис: фронт и бэк общаются по сети, прокси Vite не используется
+и статика из FastAPI не раздаётся (ADR-015). Адрес API берётся только из
+`VITE_API_URL` — он **хостовой** (`http://localhost:8000`), а не `http://backend:8000`:
+запрос делает браузер, а он имени сервиса compose не знает. Этот адрес должен быть
+перечислен в `CORS_ORIGINS` на бэкенде.
+
+Все запросы идут через единственный модуль `frontend/src/api` — вызовов `fetch`
+в остальном коде нет.
+
+Таймер считается по серверному времени: при загрузке один `GET /api/time`,
+дальше тикаем локально по измеренному смещению. Когда срок истёк, статус
+распродажи перезапрашивается у сервера — кнопка «Купить» никогда не включается
+по часам браузера.
+
+```bash
+docker compose exec frontend npm run lint        # oxlint
+docker compose exec frontend npm run typecheck   # tsc
+docker compose exec frontend npm run build       # продакшен-сборка
+```
+
+### Бэкенд
 
 ```bash
 docker compose exec backend alembic upgrade head   # миграции
