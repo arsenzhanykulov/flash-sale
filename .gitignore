@@ -8,6 +8,9 @@
 .env.*
 !.env.example
 
+# Локальные надстройки compose: у каждого свои порты.
+docker-compose.override.yml
+
 # --- Python ---
 __pycache__/
 *.py[cod]

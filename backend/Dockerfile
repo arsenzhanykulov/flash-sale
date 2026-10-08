@@ -16,6 +16,9 @@ COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen
 
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY app ./app
@@ -23,4 +26,6 @@ COPY tests ./tests
 
 EXPOSE 8000
 
+# Перед запуском приложения entrypoint накатывает миграции (ADR-016).
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
