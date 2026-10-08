@@ -2,21 +2,27 @@
 
 Рабочая база (`DATABASE_URL`) не трогается: адрес тестовой базы либо задан
 в `TEST_DATABASE_URL`, либо выводится из рабочего как `<имя>_test`.
-Перед прогоном база пересоздаётся с нуля, после прогона удаляется.
+Перед прогоном база пересоздаётся с нуля и схема накатывается миграциями,
+после прогона база удаляется.
 """
 
 import os
 import re
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+from uuid import UUID, uuid4
 
 import pytest_asyncio
+from alembic import command
+from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import Connection, text
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.config import get_settings
-from app.core.db import reset_engine
+from app.core.db import get_engine, get_sessionmaker, reset_engine
 
 # База, к которой подключаемся, чтобы создать и удалить тестовую:
 # нельзя выполнить DROP DATABASE, будучи подключённым к ней же.
@@ -25,6 +31,9 @@ MAINTENANCE_DB = "postgres"
 # Имя базы подставляется в SQL как идентификатор, поэтому допускаем
 # только безопасный набор символов.
 SAFE_DB_NAME = re.compile(r"\A[A-Za-z0-9_]+\Z")
+
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+ALEMBIC_INI = BACKEND_DIR / "alembic.ini"
 
 
 def database_name(url: str) -> str:
@@ -69,9 +78,30 @@ def resolve_test_database_url() -> str:
     return test_url
 
 
+def alembic_config(connection: Connection) -> Config:
+    """Конфиг Alembic, работающий на уже открытом соединении.
+
+    env.py в этом режиме не создаёт свой engine: asyncio.run() внутри
+    работающего event loop вызвать нельзя.
+    """
+    config = Config(str(ALEMBIC_INI))
+    config.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    config.attributes["connection"] = connection
+    return config
+
+
+async def run_migrations(revision: str, *, downgrade: bool = False) -> None:
+    async with get_engine().begin() as conn:
+        await conn.run_sync(
+            lambda sync_conn: (command.downgrade if downgrade else command.upgrade)(
+                alembic_config(sync_conn), revision
+            )
+        )
+
+
 @pytest_asyncio.fixture(scope="session", loop_scope="session", autouse=True)
 async def test_database() -> AsyncIterator[str]:
-    """Создаёт тестовую базу и переключает на неё приложение."""
+    """Создаёт тестовую базу, накатывает миграции и переключает на неё приложение."""
     test_url = resolve_test_database_url()
     test_db = database_name(test_url)
     original_database_url = os.environ["DATABASE_URL"]
@@ -91,6 +121,10 @@ async def test_database() -> AsyncIterator[str]:
         os.environ["DATABASE_URL"] = test_url
         get_settings.cache_clear()
         await reset_engine()
+
+        # Схема накатывается миграциями, а не create_all: тесты проверяют
+        # ровно то, что окажется на рабочей базе.
+        await run_migrations("head")
 
         yield test_url
 
@@ -114,3 +148,58 @@ async def client(test_database: str) -> AsyncIterator[AsyncClient]:
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http_client:
         yield http_client
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def session(test_database: str) -> AsyncIterator[AsyncSession]:
+    """Сессия с откатом в конце: тест не оставляет данных после себя."""
+    async with get_sessionmaker()() as db_session:
+        try:
+            yield db_session
+        finally:
+            await db_session.rollback()
+
+
+@dataclass(frozen=True)
+class SaleFixture:
+    """Готовая распродажа на одну единицу товара и покупатель к ней."""
+
+    shop_id: UUID
+    buyer_id: UUID
+    product_id: UUID
+    sale_id: UUID
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def sale(session: AsyncSession) -> SaleFixture:
+    # Уникальный суффикс: тесты не мешают друг другу даже без отката.
+    suffix = uuid4().hex[:12]
+
+    shop_id = await session.scalar(
+        text("insert into users (email, role) values (:email, 'shop') returning id"),
+        {"email": f"shop-{suffix}@example.com"},
+    )
+    buyer_id = await session.scalar(
+        text("insert into users (email, role) values (:email, 'buyer') returning id"),
+        {"email": f"buyer-{suffix}@example.com"},
+    )
+    product_id = await session.scalar(
+        text("insert into products (shop_id, name) values (:shop_id, :name) returning id"),
+        {"shop_id": shop_id, "name": f"Товар {suffix}"},
+    )
+    sale_id = await session.scalar(
+        text("""
+            insert into sales (product_id, price_minor, currency, quantity, start_at, end_at)
+            values (:product_id, 100000, 'KGS', 1, now() - interval '1 minute',
+                    now() + interval '1 hour')
+            returning id
+        """),
+        {"product_id": product_id},
+    )
+
+    return SaleFixture(
+        shop_id=shop_id,
+        buyer_id=buyer_id,
+        product_id=product_id,
+        sale_id=sale_id,
+    )

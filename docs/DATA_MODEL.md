@@ -7,7 +7,7 @@
 | поле | тип | примечание |
 |---|---|---|
 | id | uuid PK | |
-| email | text UNIQUE NOT NULL | хранить в lower-case |
+| email | text UNIQUE NOT NULL | lower-case, CHECK `email = lower(email)` |
 | role | text NOT NULL | `buyer` \| `shop`, CHECK |
 | created_at | timestamptz | default now() |
 
@@ -73,8 +73,8 @@ RETURNING id;
 | reservation_id | uuid UNIQUE FK → reservations | один заказ на бронь |
 | user_id | uuid FK → users | |
 | sale_id | uuid FK → sales | |
-| amount_minor | bigint NOT NULL | фиксируется при создании |
-| currency | char(3) | |
+| amount_minor | bigint NOT NULL | фиксируется при создании, CHECK > 0 |
+| currency | char(3) NOT NULL | |
 | status | text NOT NULL | `pending_payment` \| `paid` \| `failed` |
 | created_at, paid_at | timestamptz | |
 
@@ -102,3 +102,27 @@ RETURNING id;
 | created_at, sent_at | timestamptz | |
 
 Вставка: `INSERT ... ON CONFLICT (dedup_key) DO NOTHING`.
+
+## Как это реализовано в схеме
+
+Миграция: `backend/migrations/versions/20261008_2032_223134f5b6cc_initial_schema.py`.
+
+- **NOT NULL.** Nullable только то, что помечено `NULL` или необязательно по смыслу:
+  `sales.closed_at`, `products.description`, `products.image_url`,
+  `payments.provider_payment_id`, `payments.last_checked_at`, `orders.paid_at`.
+  Все FK и остальные колонки — `NOT NULL`.
+- **Имена ограничений** задаёт `naming_convention` в `MetaData`:
+  `pk_<table>`, `fk_<table>_<column>_<ref_table>`, `uq_<table>_<columns>`,
+  `ix_<table>_<columns>`, `ck_<table>_<name>`. Без этого Postgres придумывает имена сам,
+  они различаются между окружениями и `downgrade` не находит, что удалять.
+- **Статусы** — `text` + CHECK, без нативных ENUM: значение в ENUM нельзя добавить
+  в одной транзакции с другими изменениями, а CHECK меняется обычной миграцией.
+  Допустимые значения живут в `StrEnum` рядом с моделью, CHECK собирается из него.
+- **id** генерирует Postgres (`server_default gen_random_uuid()`) — явный SQL
+  критичных операций вставляет строки, не заботясь о генерации id в Python.
+- **FK** без `ON DELETE CASCADE` (поведение по умолчанию, `NO ACTION`): брони,
+  заказы и платежи каскадом не удаляются.
+- **`reservations.expires_at`** — `NOT NULL` без server default. TTL брони (инвариант 3) —
+  бизнес-правило, его задаёт сервис; в схеме менять его пришлось бы миграцией.
+- **`updated_at`** — `server_default now()` и ORM-`onupdate`. Триггера в БД нет, поэтому
+  в явном SQL критичных операций `updated_at = now()` пишется руками.
