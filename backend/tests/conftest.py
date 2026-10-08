@@ -8,7 +8,7 @@
 
 import os
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -170,9 +170,12 @@ class SaleFixture:
     sale_id: UUID
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def sale(session: AsyncSession) -> SaleFixture:
-    # Уникальный суффикс: тесты не мешают друг другу даже без отката.
+async def create_shop_with_product(session: AsyncSession) -> tuple[UUID, UUID, UUID]:
+    """Магазин, покупатель и товар с уникальными именами.
+
+    Суффикс делает данные каждого теста своими, даже если строки
+    останутся в базе до конца прогона.
+    """
     suffix = uuid4().hex[:12]
 
     shop_id = await session.scalar(
@@ -187,6 +190,12 @@ async def sale(session: AsyncSession) -> SaleFixture:
         text("insert into products (shop_id, name) values (:shop_id, :name) returning id"),
         {"shop_id": shop_id, "name": f"Товар {suffix}"},
     )
+    return shop_id, buyer_id, product_id
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def sale(session: AsyncSession) -> SaleFixture:
+    shop_id, buyer_id, product_id = await create_shop_with_product(session)
     sale_id = await session.scalar(
         text("""
             insert into sales (product_id, price_minor, currency, quantity, start_at, end_at)
@@ -203,3 +212,44 @@ async def sale(session: AsyncSession) -> SaleFixture:
         product_id=product_id,
         sale_id=sale_id,
     )
+
+
+# Фабрика распродаж с произвольным окном. Окно задаётся SQL-выражениями
+# относительно now() в БД: время должно быть серверным (инвариант 2), а
+# подставлять datetime из Python означало бы сравнивать разные часы.
+# Интерполяция в SQL безопасна: значения приходят только из кода тестов.
+MakeSale = Callable[..., Awaitable[UUID]]
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def make_sale(session: AsyncSession) -> MakeSale:
+    async def _make_sale(
+        *,
+        start_at: str = "now()",
+        end_at: str = "now() + interval '1 hour'",
+        quantity: int = 5,
+        sold: int = 0,
+        held: int = 0,
+        closed: bool = False,
+    ) -> UUID:
+        _, _, product_id = await create_shop_with_product(session)
+        sale_id = await session.scalar(
+            text(f"""
+                insert into sales (
+                    product_id, price_minor, currency, quantity, sold, held,
+                    start_at, end_at, closed_at
+                )
+                values (
+                    :product_id, 100000, 'KGS', :quantity, :sold, :held,
+                    {start_at}, {end_at}, {"now()" if closed else "null"}
+                )
+                returning id
+            """),
+            {"product_id": product_id, "quantity": quantity, "sold": sold, "held": held},
+        )
+        # Коммит обязателен: запросы к API идут через отдельную сессию
+        # и незакоммиченных строк не увидят.
+        await session.commit()
+        return sale_id
+
+    return _make_sale
