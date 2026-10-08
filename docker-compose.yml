@@ -43,5 +43,33 @@ services:
       retries: 10
       start_period: 5s
 
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    # Настройки приложения приходят только через окружение (pydantic-settings).
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      # Hot reload: uvicorn --reload видит правки кода без пересборки образа.
+      - ./backend/app:/app/app
+      - ./backend/tests:/app/tests
+    healthcheck:
+      # В slim-образе нет curl, обходимся stdlib.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.request
+          urllib.request.urlopen("http://localhost:8000/health", timeout=3)
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
 volumes:
   pgdata:
