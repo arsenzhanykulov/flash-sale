@@ -1,0 +1,6 @@
+# Дублирует корневой .gitignore, но нужен инструментам: oxlint берёт
+# список исключений именно отсюда и иначе линтит node_modules.
+node_modules/
+dist/
+.vite/
+*.local

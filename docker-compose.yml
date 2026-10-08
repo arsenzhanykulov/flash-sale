@@ -74,5 +74,21 @@ services:
       retries: 5
       start_period: 15s
 
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    # VITE_API_URL — хостовой адрес бэкенда: запрос делает браузер,
+    # а он имени сервиса compose не знает (ADR-015).
+    env_file: .env
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./frontend:/app
+      # Анонимный том обязателен: монтирование папки с хоста поверх /app
+      # иначе скрыло бы node_modules, установленные в образе.
+      - /app/node_modules
+
 volumes:
   pgdata:
