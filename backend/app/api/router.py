@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api.routes import auth, health, reservations, sales, time
+from app.api.routes import auth, health, live, reservations, sales, time
 
 api_router = APIRouter()
 
@@ -18,3 +18,5 @@ api_router.include_router(
 )
 # Операции над своими бронями: GET /api/reservations/me, DELETE /api/reservations/{id}.
 api_router.include_router(reservations.router, prefix="/api/reservations", tags=["reservations"])
+# Live-обновления остатка: WS /ws/sales/{sale_id}.
+api_router.include_router(live.router, prefix="/ws", tags=["live"])

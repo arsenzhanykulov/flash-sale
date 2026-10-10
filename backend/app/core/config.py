@@ -47,6 +47,20 @@ class Settings(BaseSettings):
     # цикл без паузы, поэтому такая настройка роняет старт приложения.
     sweeper_interval_seconds: int = Field(default=2, gt=0)
 
+    # Окно склейки live-обновлений (ADR-020). Сигналы, пришедшие за это время,
+    # обрабатываются одной пачкой: пачка броней даёт один запрос к БД и одну
+    # рассылку. Осязаемый компромисс задержка/нагрузка, поэтому настройка.
+    live_update_window_ms: int = Field(default=50, ge=0)
+
+    @property
+    def asyncpg_dsn(self) -> str:
+        """DSN для прямого соединения asyncpg.
+
+        Слушатель LISTEN живёт вне пула SQLAlchemy, поэтому ему нужен адрес
+        без драйверного префикса.
+        """
+        return self.database_url.replace("+asyncpg", "", 1)
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors_origins(cls, value: Any) -> Any:

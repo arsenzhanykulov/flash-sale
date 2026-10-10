@@ -103,6 +103,20 @@ RETURNING id;
 
 Вставка: `INSERT ... ON CONFLICT (dedup_key) DO NOTHING`.
 
+## Триггер уведомлений
+
+```
+sale_changed_notify  AFTER UPDATE ON sales FOR EACH ROW
+WHEN (quantity, sold, held, start_at, end_at, closed_at) изменились
+  → pg_notify('sale_changed', new.id::text)
+```
+
+Миграция `42c06003e357_notify_on_sale_change`. Сигнал отправляет БД, а не код
+сервисов: новая операция (оплата, закрытие распродажи) не должна иметь шанса
+забыть уведомление (ADR-020). Внутри транзакции — значит доставляется только
+при коммите, при откате выбрасывается. В payload только id: получатель
+перечитывает состояние сам, чтобы остаток не «прыгал назад».
+
 ## Как это реализовано в схеме
 
 Миграция: `backend/migrations/versions/20261008_2032_223134f5b6cc_initial_schema.py`.
