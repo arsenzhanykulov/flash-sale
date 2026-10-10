@@ -11,32 +11,40 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.db import reset_engine
+from app.services.live_updates import SaleChangeListener, hub
 from app.services.sweeper import run_sweeper
 
 logger = logging.getLogger(__name__)
 
 
+async def stop(task: asyncio.Task[None]) -> None:
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    background: list[asyncio.Task[None]] = []
 
-    sweeper: asyncio.Task[None] | None = None
     if settings.sweeper_enabled:
-        sweeper = asyncio.create_task(run_sweeper(), name="sweeper")
+        background.append(asyncio.create_task(run_sweeper(), name="sweeper"))
     else:
         logger.warning(
             "SWEEPER_ENABLED=false: истёкшие брони не возвращаются на витрину, "
             "занятые единицы останутся занятыми"
         )
 
+    listener = SaleChangeListener(hub)
+    background.append(asyncio.create_task(listener.run(), name="live-updates"))
+
     try:
         yield
     finally:
-        if sweeper is not None:
-            sweeper.cancel()
-            with suppress(asyncio.CancelledError):
-                await sweeper
-        # Пул закрываем последним: свипер к этому моменту уже остановлен.
+        for task in background:
+            await stop(task)
+        # Пул закрываем последним: фоновые задачи уже остановлены.
         await reset_engine()
 
 

@@ -23,7 +23,19 @@ class SaleStatus(StrEnum):
 # (now() >= start_at AND now() < end_at AND closed_at IS NULL): в момент
 # старта распродажа уже active, в момент end_at — уже ended. Иначе UI и резерв
 # расходились бы на последней секунде: кнопка активна, а бронь не выдаётся.
-SALE_COLUMNS = """
+#
+# Выражение статуса одно на весь сервис: REST и live-обновления обязаны
+# считать его одинаково, иначе витрина получала бы разные ответы по двум
+# каналам одновременно.
+SALE_STATUS_CASE = """
+    case
+        when now() < s.start_at then 'upcoming'
+        when s.closed_at is not null or now() >= s.end_at then 'ended'
+        else 'active'
+    end
+"""
+
+SALE_COLUMNS = f"""
     s.id,
     s.product_id,
     p.name as product_name,
@@ -35,11 +47,7 @@ SALE_COLUMNS = """
     s.quantity - s.sold - s.held as remaining,
     s.start_at,
     s.end_at,
-    case
-        when now() < s.start_at then 'upcoming'
-        when s.closed_at is not null or now() >= s.end_at then 'ended'
-        else 'active'
-    end as status,
+    {SALE_STATUS_CASE} as status,
     now() as server_time
 """
 
@@ -90,3 +98,39 @@ async def list_sales(session: AsyncSession) -> list[SaleView]:
 async def get_sale(session: AsyncSession, sale_id: UUID) -> SaleView | None:
     row = (await session.execute(GET_SALE_SQL, {"sale_id": sale_id})).one_or_none()
     return None if row is None else to_view(row)
+
+
+# Снимок для live-обновлений: только то, что меняется в ходе распродажи.
+# Товар и цену по WebSocket не гоняем — они неизменны, клиент уже получил
+# их по HTTP.
+SALE_SNAPSHOT_SQL = text(f"""
+    select
+        s.id as sale_id,
+        s.quantity,
+        s.sold,
+        s.held,
+        s.quantity - s.sold - s.held as remaining,
+        {SALE_STATUS_CASE} as status,
+        now() as server_time
+    from sales s
+    where s.id = :sale_id
+""")
+
+
+@dataclass(frozen=True)
+class SaleSnapshot:
+    sale_id: UUID
+    quantity: int
+    sold: int
+    held: int
+    remaining: int
+    status: SaleStatus
+    # Время, на которое посчитан снимок (ADR-009).
+    server_time: datetime
+
+
+async def get_sale_snapshot(session: AsyncSession, sale_id: UUID) -> SaleSnapshot | None:
+    row = (await session.execute(SALE_SNAPSHOT_SQL, {"sale_id": sale_id})).one_or_none()
+    if row is None:
+        return None
+    return SaleSnapshot(**{**row._mapping, "status": SaleStatus(row.status)})

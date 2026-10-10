@@ -24,6 +24,11 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.25",
     "httpx>=0.28",
+    # WebSocket-клиент для тестов: aconnect_ws поверх ASGI-транспорта.
+    # Асинхронный, работает в том же event loop, что и фикстуры БД — в отличие
+    # от синхронного TestClient из Starlette, который ходит через портал
+    # в отдельном потоке.
+    "httpx-ws>=0.7",
 ]
 
 [tool.uv]
