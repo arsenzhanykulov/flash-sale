@@ -149,6 +149,23 @@ CANCEL_HELD_SQL = text(f"""
 # поэтому время правки пишется выше руками.
 RELEASE_UNIT_SQL = text("update sales set held = held - 1 where id = :sale_id")
 
+# sale_id брони неизменяем, поэтому читается обычным SELECT без блокировки:
+# нужен он только чтобы узнать, какую строку sales захватывать первой.
+# Фильтр по user_id избавляет от захвата чужой распродажи — решение о том,
+# можно ли отменять, всё равно принимает условный UPDATE ниже.
+RESERVATION_SALE_SQL = text("""
+    select sale_id from reservations
+    where id = :reservation_id and user_id = :user_id
+""")
+
+# Инвариант 10: порядок блокировок sales → reservations. Резерв берёт строку
+# sales первой (held = held + 1), поэтому и отмена обязана начинать с неё.
+# Пока отмена захватывала бронь раньше распродажи, одновременные отмена
+# и резерв одного покупателя давали взаимную блокировку: резерв держал sales
+# и ждал уникальный индекс по reservations, отмена держала бронь и ждала
+# sales (ADR-018).
+LOCK_SALE_SQL = text("select id from sales where id = :sale_id for update")
+
 # Запускается, только если UPDATE не изменил строку, — исключительно чтобы
 # выбрать ответ.
 RESERVATION_STATE_SQL = text("select user_id, status from reservations where id = :reservation_id")
@@ -227,17 +244,29 @@ async def cancel_reservation(
     """Отменить свою бронь в held и вернуть единицу товара.
 
     Смена статуса и уменьшение held — в одной транзакции (ADR-002).
+
+    Порядок блокировок — sales, затем reservations (инвариант 10, ADR-018).
+    Решение по-прежнему принимает условный UPDATE по `status = 'held'`:
+    захват строки sales лишь выстраивает порядок и ничего не решает.
     """
     try:
         sale_id = await session.scalar(
-            CANCEL_HELD_SQL, {"reservation_id": reservation_id, "user_id": user_id}
+            RESERVATION_SALE_SQL, {"reservation_id": reservation_id, "user_id": user_id}
         )
-        if sale_id is not None:
-            await session.execute(RELEASE_UNIT_SQL, {"sale_id": sale_id})
-            await session.commit()
-            return CancelOutcome.CANCELLED
+        if sale_id is None:
+            # Брони нет или она чужая — explain вернёт 404.
+            outcome = await explain_cancel_failure(session, reservation_id, user_id)
+        else:
+            await session.execute(LOCK_SALE_SQL, {"sale_id": sale_id})
+            cancelled_sale_id = await session.scalar(
+                CANCEL_HELD_SQL, {"reservation_id": reservation_id, "user_id": user_id}
+            )
+            if cancelled_sale_id is not None:
+                await session.execute(RELEASE_UNIT_SQL, {"sale_id": cancelled_sale_id})
+                await session.commit()
+                return CancelOutcome.CANCELLED
 
-        outcome = await explain_cancel_failure(session, reservation_id, user_id)
+            outcome = await explain_cancel_failure(session, reservation_id, user_id)
     except CancelError:
         await session.rollback()
         raise
