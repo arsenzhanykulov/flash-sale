@@ -6,11 +6,13 @@
 после прогона база удаляется.
 """
 
+import asyncio
 import os
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
@@ -161,6 +163,65 @@ async def session(test_database: str) -> AsyncIterator[AsyncSession]:
 
 
 ACTIVE_RESERVATION_STATUSES_SQL = "'held', 'paying', 'paid'"
+
+# Сколько участников в тестах на конкурентность.
+#
+# Ограничивает не Postgres (max_connections=100, минус 3 служебных → 97),
+# а пул SQLAlchemy: create_async_engine без параметров даёт
+# pool_size=5 + max_overflow=10 = 15 одновременных соединений.
+# 10 участников + 1 соединение фикстуры session = 11 из 15, с запасом.
+# Больше 15 — и лишние встанут в очередь на пуле, запросы пойдут
+# последовательно, окно гонки закроется, и тест пройдёт по неверной причине.
+CONCURRENT_PARTICIPANTS = 10
+
+
+@dataclass(frozen=True)
+class BarrierRun:
+    """Результаты одновременного запуска участников."""
+
+    results: list[Any]
+    # pg_backend_pid каждого участника: разные значения доказывают, что
+    # участники сидят на разных соединениях, а не делят одно по очереди.
+    backend_pids: list[int]
+
+    @property
+    def distinct_connections(self) -> int:
+        return len(set(self.backend_pids))
+
+
+async def run_with_barrier(
+    count: int,
+    operation: Callable[[AsyncSession, int], Awaitable[Any]],
+) -> BarrierRun:
+    """Запустить `count` участников одновременно, каждого на своём соединении.
+
+    Барьер стоит ПОСЛЕ захвата соединения: в момент его снятия count соединений
+    уже заняты — это факт, а не предположение. Транзакцию до барьера не
+    закрываем, иначе SQLAlchemy вернёт соединение в пул и параллельность
+    останется только на словах.
+
+    Исключения возвращаются как значения: отказы вроде already_reserved —
+    это ожидаемый результат участника, а не сбой прогона.
+    """
+    barrier = asyncio.Barrier(count)
+    sessionmaker = get_sessionmaker()
+    backend_pids: list[int] = []
+
+    async def participant(index: int) -> Any:
+        async with sessionmaker() as participant_session:
+            # Любой запрос заставляет пул выдать соединение и показывает,
+            # какой серверный процесс Postgres нам достался.
+            backend_pids.append(await participant_session.scalar(text("select pg_backend_pid()")))
+            await barrier.wait()
+            return await operation(participant_session, index)
+
+    results = list(
+        await asyncio.gather(
+            *(participant(index) for index in range(count)),
+            return_exceptions=True,
+        )
+    )
+    return BarrierRun(results=results, backend_pids=backend_pids)
 
 
 async def read_counters(session: AsyncSession, sale_id: UUID) -> tuple[int, int, int]:
