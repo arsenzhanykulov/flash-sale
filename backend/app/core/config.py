@@ -8,7 +8,7 @@
 from functools import lru_cache
 from typing import Annotated, Any
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 DEFAULT_CORS_ORIGINS = ["http://localhost:5173"]
@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     # Инвариант 3: бронь в held живёт 10 минут. Срок здесь, а не в схеме БД:
     # это бизнес-правило, в схеме его смена требовала бы миграции.
     reservation_ttl_seconds: int = 600
+
+    # Свипер истёкших броней (ADR-010, ADR-019).
+    # Выключается только явным флагом: случайный ноль в интервале не должен
+    # молча останавливать возврат броней на витрину.
+    sweeper_enabled: bool = True
+    # gt=0: нулевой или отрицательный интервал — это не «выключить», а крутить
+    # цикл без паузы, поэтому такая настройка роняет старт приложения.
+    sweeper_interval_seconds: int = Field(default=2, gt=0)
 
     @field_validator("cors_origins", mode="before")
     @classmethod
