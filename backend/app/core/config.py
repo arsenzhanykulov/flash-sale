@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_ttl_minutes: int = 1440
 
+    # Инвариант 3: бронь в held живёт 10 минут. Срок здесь, а не в схеме БД:
+    # это бизнес-правило, в схеме его смена требовала бы миграции.
+    reservation_ttl_seconds: int = 600
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors_origins(cls, value: Any) -> Any:

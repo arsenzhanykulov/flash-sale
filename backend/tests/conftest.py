@@ -160,6 +160,50 @@ async def session(test_database: str) -> AsyncIterator[AsyncSession]:
             await db_session.rollback()
 
 
+ACTIVE_RESERVATION_STATUSES_SQL = "'held', 'paying', 'paid'"
+
+
+async def read_counters(session: AsyncSession, sale_id: UUID) -> tuple[int, int, int]:
+    """quantity, sold, held по распродаже — из закоммиченных данных."""
+    await session.rollback()  # не читаем снимок своей старой транзакции
+    row = (
+        await session.execute(
+            text("select quantity, sold, held from sales where id = :sale_id"),
+            {"sale_id": sale_id},
+        )
+    ).one()
+    return row.quantity, row.sold, row.held
+
+
+async def count_active_reservations(session: AsyncSession, sale_id: UUID) -> int:
+    await session.rollback()
+    count = await session.scalar(
+        text(f"""
+            select count(*) from reservations
+            where sale_id = :sale_id
+              and status in ({ACTIVE_RESERVATION_STATUSES_SQL})
+        """),
+        {"sale_id": sale_id},
+    )
+    return count or 0
+
+
+async def assert_counters_consistent(session: AsyncSession, sale_id: UUID) -> None:
+    """ADR-002: sold + held обязаны совпадать с числом занимающих товар броней.
+
+    Счётчики в sales меняются только вместе со статусом брони и в одной
+    транзакции с ним, поэтому расхождение означает потерянное обновление.
+    """
+    quantity, sold, held = await read_counters(session, sale_id)
+    active = await count_active_reservations(session, sale_id)
+
+    assert sold + held == active, (
+        f"счётчики разошлись с бронями: sold={sold} + held={held} = {sold + held}, "
+        f"а активных броней {active} (quantity={quantity})"
+    )
+    assert sold + held <= quantity, f"оверсейл: sold={sold} + held={held} > quantity={quantity}"
+
+
 @dataclass(frozen=True)
 class SaleFixture:
     """Готовая распродажа на одну единицу товара и покупатель к ней."""
