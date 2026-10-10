@@ -1,49 +1,141 @@
-import { useEffect } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useCallback, useEffect, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 
-import type { Sale } from '../api'
+import { ApiError, api } from '../api'
+import type { Sale, SaleStatus } from '../api'
 import { useAuth } from '../auth/authContext'
+import { CartPanel } from '../cart/CartPanel'
+import { announceCartChanged } from '../cart/cartChannel'
+import { useMyReservations } from '../cart/useMyReservations'
 import { STATUS_LABELS, formatDateTime, formatMoney } from '../format'
 import { Countdown } from '../time/Countdown'
 import { useServerClock } from '../time/serverClock'
 import { useSale } from './useSale'
+import type { ConnectionState } from './useSaleLive'
+import { useSaleLive } from './useSaleLive'
+
+/** Понятный текст на каждый машинный код отказа. */
+const RESERVE_ERRORS: Record<string, string> = {
+  sold_out: 'Товар разобрали — все единицы уже заняты',
+  already_reserved: 'У вас уже есть бронь на эту распродажу',
+  not_started: 'Распродажа ещё не началась',
+  ended: 'Распродажа уже завершена',
+  sale_not_found: 'Распродажа не найдена',
+}
+
+const CANCEL_ERRORS: Record<string, string> = {
+  not_cancellable: 'Бронь уже оплачивается, отменить нельзя',
+  reservation_not_found: 'Бронь не найдена — возможно, она уже снята',
+}
+
+function describe(cause: unknown, texts: Record<string, string>, fallback: string): string {
+  if (!(cause instanceof ApiError)) return fallback
+  if (cause.code !== null && cause.code in texts) return texts[cause.code]
+  return cause.message
+}
 
 /** Момент, до которого идёт отсчёт: старт для upcoming, конец для active. */
-function countdownTarget(sale: Sale): string | null {
-  if (sale.status === 'upcoming') return sale.start_at
-  if (sale.status === 'active') return sale.end_at
+function countdownTarget(sale: Sale, status: SaleStatus): string | null {
+  if (status === 'upcoming') return sale.start_at
+  if (status === 'active') return sale.end_at
   return null
 }
 
 export function SalePage() {
   const { saleId = '' } = useParams()
-  const { sale, error, loading, refetch } = useSale(saleId)
-  const { nowMs, synced } = useServerClock()
-  const { user } = useAuth()
+  const navigate = useNavigate()
+  const { token, user } = useAuth()
 
+  const { sale, error, loading, refetch } = useSale(saleId)
+  const { snapshot, connection } = useSaleLive(saleId)
+  const { reservations, refresh: refreshCart } = useMyReservations()
+  const { nowMs, synced } = useServerClock()
+
+  const [reserving, setReserving] = useState(false)
+  const [reserveError, setReserveError] = useState<string | null>(null)
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
+  const [expiredNotice, setExpiredNotice] = useState(false)
+
+  // Изменяемую часть берём из live-снимка, когда он есть: остаток и статус
+  // обновляются без перезагрузки. Товар, цена и окно неизменны и приходят
+  // по HTTP один раз.
+  const status = snapshot?.status ?? sale?.status ?? null
+  const remaining = snapshot?.remaining ?? sale?.remaining ?? 0
+
+  const target = sale === null || status === null ? null : countdownTarget(sale, status)
   // Срок по серверным часам истёк, а сервер всё ещё отдаёт прежний статус.
-  // Значение выводится при рендере: отдельное состояние пришлось бы сбрасывать
-  // эффектом, а это лишний цикл рендера.
-  const target = sale === null ? null : countdownTarget(sale)
   const boundaryPassed = target !== null && new Date(target).getTime() <= nowMs
 
-  // Спрашиваем сервер, пока он не сменит статус. Одного запроса мало:
-  // при расхождении часов в доли секунды сервер ещё отдаёт прежний статус,
-  // и локальный таймер тут же снова показал бы ноль. Как только статус
-  // сменился, boundaryPassed становится false и опрос прекращается сам.
+  // Смена статуса по времени (upcoming → active) счётчиков не меняет,
+  // поэтому триггер молчит и live-обновление не придёт — здесь спрашиваем сами.
   useEffect(() => {
     if (!boundaryPassed) return
     const timer = setInterval(refetch, 1000)
     return () => clearInterval(timer)
   }, [boundaryPassed, refetch])
 
+  const reservation = reservations.find((item) => item.sale_id === saleId) ?? null
+
+  const handleExpired = useCallback(() => {
+    setExpiredNotice(true)
+    refreshCart()
+    refetch()
+  }, [refreshCart, refetch])
+
+  async function handleBuy() {
+    if (token === null) {
+      navigate('/login')
+      return
+    }
+    setReserveError(null)
+    setExpiredNotice(false)
+    setReserving(true)
+    try {
+      await api.reserve(saleId, token)
+      refreshCart()
+      if (user !== null) announceCartChanged(user.id)
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 401) {
+        navigate('/login')
+        return
+      }
+      setReserveError(describe(cause, RESERVE_ERRORS, 'Не удалось забронировать'))
+      // Отказ почти всегда означает, что состояние изменилось — обновим.
+      refetch()
+      refreshCart()
+    } finally {
+      setReserving(false)
+    }
+  }
+
+  async function handleCancel() {
+    if (token === null || reservation === null) return
+    setCancelError(null)
+    setCancelling(true)
+    try {
+      await api.cancelReservation(reservation.id, token)
+      refreshCart()
+      if (user !== null) announceCartChanged(user.id)
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 401) {
+        navigate('/login')
+        return
+      }
+      setCancelError(describe(cause, CANCEL_ERRORS, 'Не удалось отменить бронь'))
+      refreshCart()
+    } finally {
+      setCancelling(false)
+    }
+  }
+
   if (loading) return <p className="muted">Загружаем…</p>
   if (error !== null) return <p className="error">{error}</p>
-  if (sale === null) return null
+  if (sale === null || status === null) return null
 
-  const soldOut = sale.remaining === 0
+  const soldOut = remaining === 0
   // Кнопка включается только по статусу с сервера, никогда по локальным часам.
-  const canBuy = sale.status === 'active' && !soldOut && !boundaryPassed
+  const canBuy = status === 'active' && !soldOut && !boundaryPassed && reservation === null
 
   return (
     <article className="panel">
@@ -57,7 +149,11 @@ export function SalePage() {
         )}
 
         <div className="sale__info">
-          <span className={`badge badge--${sale.status}`}>{STATUS_LABELS[sale.status]}</span>
+          <div className="sale__badges">
+            <span className={`badge badge--${status}`}>{STATUS_LABELS[status]}</span>
+            <ConnectionIndicator state={connection} />
+          </div>
+
           <h1>{sale.product_name}</h1>
           {sale.product_description !== null && (
             <p className="muted">{sale.product_description}</p>
@@ -69,18 +165,18 @@ export function SalePage() {
             <div className="stock__bar">
               <div
                 className="stock__fill"
-                style={{ width: `${(sale.remaining / sale.quantity) * 100}%` }}
+                style={{ width: `${(remaining / sale.quantity) * 100}%` }}
               />
             </div>
             <p className="muted">
-              Осталось {sale.remaining} из {sale.quantity}
+              Осталось {remaining} из {sale.quantity}
             </p>
           </div>
 
           {target !== null && (
             <Countdown
               target={target}
-              label={sale.status === 'upcoming' ? 'До старта' : 'До конца'}
+              label={status === 'upcoming' ? 'До старта' : 'До конца'}
             />
           )}
 
@@ -97,47 +193,53 @@ export function SalePage() {
             </div>
           </dl>
 
-          <BuyButton canBuy={canBuy} sale={sale} soldOut={soldOut} signedIn={user !== null} />
+          <button
+            type="button"
+            className="button button--buy"
+            disabled={!canBuy || reserving}
+            onClick={() => void handleBuy()}
+          >
+            {reserving ? 'Бронируем…' : 'Купить'}
+          </button>
 
+          {reserveError !== null && <p className="error">{reserveError}</p>}
+          {reservation === null && <BuyHint status={status} soldOut={soldOut} />}
+          {expiredNotice && reservation === null && (
+            <p className="notice">Бронь истекла — единица вернулась на витрину.</p>
+          )}
           {!synced && <p className="muted">Серверное время недоступно, таймер приблизительный.</p>}
         </div>
       </div>
+
+      {reservation !== null && (
+        <CartPanel
+          key={reservation.id}
+          reservation={reservation}
+          onExpired={handleExpired}
+          onCancel={() => void handleCancel()}
+          cancelling={cancelling}
+          error={cancelError}
+        />
+      )}
     </article>
   )
 }
 
-function BuyButton({
-  canBuy,
-  sale,
-  soldOut,
-  signedIn,
-}: {
-  canBuy: boolean
-  sale: Sale
-  soldOut: boolean
-  signedIn: boolean
-}) {
+function ConnectionIndicator({ state }: { state: ConnectionState }) {
+  const online = state === 'online'
   return (
-    <>
-      <button
-        type="button"
-        className="button button--buy"
-        disabled={!canBuy}
-        // Резерв появится на следующем шаге; пока кнопка только объясняет это.
-        onClick={() => alert('Резерв — на следующем шаге.')}
-      >
-        Купить
-      </button>
-      {!canBuy && (
-        <p className="muted">
-          {soldOut
-            ? 'Всё разобрали'
-            : sale.status === 'ended'
-              ? 'Распродажа завершена'
-              : 'Кнопка включится, когда распродажа начнётся'}
-        </p>
-      )}
-      {canBuy && !signedIn && <p className="muted">Для покупки понадобится вход.</p>}
-    </>
+    <span className={`link-state link-state--${online ? 'online' : 'offline'}`}>
+      <span className="link-state__dot" />
+      {online ? 'на связи' : 'переподключение'}
+    </span>
   )
+}
+
+function BuyHint({ status, soldOut }: { status: SaleStatus; soldOut: boolean }) {
+  if (status === 'upcoming') {
+    return <p className="muted">Кнопка включится, когда распродажа начнётся</p>
+  }
+  if (status === 'ended') return <p className="muted">Распродажа завершена</p>
+  if (soldOut) return <p className="muted">Всё разобрали</p>
+  return null
 }
