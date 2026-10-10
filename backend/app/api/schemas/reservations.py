@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from app.services.reservations import ReserveRefusal
+from app.services.reservations import CancelRefusal, ReserveRefusal
 
 
 class ReservationResponse(BaseModel):
@@ -31,3 +31,34 @@ class ReserveErrorDetail(BaseModel):
 
 class ReserveErrorResponse(BaseModel):
     detail: ReserveErrorDetail
+
+
+class MyReservationItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    sale_id: UUID
+    status: str
+    expires_at: datetime
+
+
+class MyReservationsResponse(BaseModel):
+    """Активные брони покупателя.
+
+    server_time — одно на весь ответ: по смещению от него клиент считает,
+    сколько осталось у каждой брони (ADR-009).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    server_time: datetime
+    reservations: list[MyReservationItemResponse]
+
+
+class CancelErrorDetail(BaseModel):
+    code: CancelRefusal
+    message: str
+
+
+class CancelErrorResponse(BaseModel):
+    detail: CancelErrorDetail

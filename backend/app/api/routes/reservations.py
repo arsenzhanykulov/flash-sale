@@ -1,13 +1,30 @@
-"""Резерв единицы товара."""
+"""Резерв единицы товара и отмена брони."""
 
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 
 from app.api.deps import CurrentUser, SessionDep
-from app.api.schemas.reservations import ReservationResponse, ReserveErrorResponse
-from app.services.reservations import ReserveError, ReserveRefusal, create_reservation
+from app.api.schemas.reservations import (
+    CancelErrorResponse,
+    MyReservationsResponse,
+    ReservationResponse,
+    ReserveErrorResponse,
+)
+from app.services.reservations import (
+    CancelError,
+    CancelRefusal,
+    ReserveError,
+    ReserveRefusal,
+    cancel_reservation,
+    create_reservation,
+    list_my_active_reservations,
+)
 
+# Вложенный в распродажу: POST /api/sales/{sale_id}/reservations.
+sale_scoped_router = APIRouter()
+
+# Операции над своими бронями: /api/reservations.
 router = APIRouter()
 
 # Распродажа не найдена — 404. Остальные отказы это конфликт с текущим
@@ -25,8 +42,16 @@ REFUSALS: dict[ReserveRefusal, tuple[int, str]] = {
     ),
 }
 
+CANCEL_REFUSALS: dict[CancelRefusal, tuple[int, str]] = {
+    CancelRefusal.RESERVATION_NOT_FOUND: (status.HTTP_404_NOT_FOUND, "Бронь не найдена"),
+    CancelRefusal.NOT_CANCELLABLE: (
+        status.HTTP_409_CONFLICT,
+        "Бронь нельзя отменить: оплата уже начата",
+    ),
+}
 
-@router.post(
+
+@sale_scoped_router.post(
     "/{sale_id}/reservations",
     response_model=ReservationResponse,
     status_code=status.HTTP_201_CREATED,
@@ -62,3 +87,57 @@ async def create_reservation_endpoint(
         ) from error
 
     return ReservationResponse.model_validate(reservation)
+
+
+# Объявлено выше /{reservation_id}, чтобы «me» не читалось как идентификатор.
+@router.get(
+    "/me",
+    response_model=MyReservationsResponse,
+    responses={status.HTTP_401_UNAUTHORIZED: {"description": "Требуется вход"}},
+    summary="Мои активные брони (held и paying)",
+)
+async def my_reservations(
+    current_user: CurrentUser,
+    session: SessionDep,
+) -> MyReservationsResponse:
+    view = await list_my_active_reservations(session, user_id=current_user.id)
+    return MyReservationsResponse.model_validate(view)
+
+
+@router.delete(
+    "/{reservation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        status.HTTP_204_NO_CONTENT: {
+            "description": "Бронь отменена, либо уже была завершена — тела нет"
+        },
+        status.HTTP_401_UNAUTHORIZED: {"description": "Требуется вход"},
+        status.HTTP_404_NOT_FOUND: {
+            "model": CancelErrorResponse,
+            "description": "Брони нет или она принадлежит другому покупателю",
+        },
+        status.HTTP_409_CONFLICT: {
+            "model": CancelErrorResponse,
+            "description": "code: not_cancellable — оплата уже начата",
+        },
+    },
+    summary="Отменить свою бронь",
+)
+async def cancel_reservation_endpoint(
+    reservation_id: UUID,
+    current_user: CurrentUser,
+    session: SessionDep,
+) -> None:
+    """Идемпотентно: повторная отмена и уже завершённая бронь тоже дают 204."""
+    try:
+        await cancel_reservation(
+            session,
+            reservation_id=reservation_id,
+            user_id=current_user.id,
+        )
+    except CancelError as error:
+        http_status, message = CANCEL_REFUSALS[error.reason]
+        raise HTTPException(
+            status_code=http_status,
+            detail={"code": error.reason.value, "message": message},
+        ) from error

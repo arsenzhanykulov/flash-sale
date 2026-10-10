@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models import ReservationStatus
+from app.services.server_time import get_server_time
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,50 @@ class ReserveError(Exception):
     def __init__(self, reason: ReserveRefusal) -> None:
         super().__init__(reason.value)
         self.reason = reason
+
+
+class CancelRefusal(StrEnum):
+    """Почему бронь не отменена."""
+
+    RESERVATION_NOT_FOUND = "reservation_not_found"
+    NOT_CANCELLABLE = "not_cancellable"
+
+
+class CancelError(Exception):
+    def __init__(self, reason: CancelRefusal) -> None:
+        super().__init__(reason.value)
+        self.reason = reason
+
+
+class CancelOutcome(StrEnum):
+    """Чем закончилась отмена. Клиенту в обоих случаях уходит 204."""
+
+    CANCELLED = "cancelled"
+    # Бронь уже была завершена, единица давно вернулась — делать нечего.
+    ALREADY_RELEASED = "already_released"
+
+
+# Терминальные статусы, при которых единица товара уже возвращена: повторная
+# отмена ничего не меняет и отвечает так же, как успешная.
+RELEASED_STATUSES = frozenset(
+    {
+        ReservationStatus.CANCELLED,
+        ReservationStatus.EXPIRED,
+        ReservationStatus.FAILED,
+    }
+)
+
+# Инвариант 4: начатая оплата доводится до конца, отменять её нельзя.
+NOT_CANCELLABLE_STATUSES = frozenset(
+    {
+        ReservationStatus.PAYING,
+        ReservationStatus.PAID,
+    }
+)
+
+# Брони, которые покупатель видит как «свои активные».
+BUYER_ACTIVE_STATUSES = (ReservationStatus.HELD, ReservationStatus.PAYING)
+_BUYER_ACTIVE_SQL = ", ".join(f"'{status.value}'" for status in BUYER_ACTIVE_STATUSES)
 
 
 @dataclass(frozen=True)
@@ -86,6 +131,119 @@ INSERT_RESERVATION_SQL = text("""
     values (:sale_id, :user_id, :status, now() + make_interval(secs => :ttl_seconds))
     returning id, sale_id, status, expires_at, created_at
 """)
+
+
+# Отмена. Решение принимает БД: условие `status = 'held'` проверяется тем же
+# оператором, что и запись, поэтому две одновременные отмены не уменьшат held
+# дважды. Проигравшие получат 0 строк и не тронут счётчик.
+CANCEL_HELD_SQL = text(f"""
+    update reservations
+    set status = '{ReservationStatus.CANCELLED.value}', updated_at = now()
+    where id = :reservation_id
+      and user_id = :user_id
+      and status = '{ReservationStatus.HELD.value}'
+    returning sale_id
+""")
+
+# Триггера на updated_at в БД нет, и ORM-onupdate на явном SQL не срабатывает,
+# поэтому время правки пишется выше руками.
+RELEASE_UNIT_SQL = text("update sales set held = held - 1 where id = :sale_id")
+
+# Запускается, только если UPDATE не изменил строку, — исключительно чтобы
+# выбрать ответ.
+RESERVATION_STATE_SQL = text("select user_id, status from reservations where id = :reservation_id")
+
+LIST_BUYER_ACTIVE_SQL = text(f"""
+    select r.id, r.sale_id, r.status, r.expires_at
+    from reservations r
+    where r.user_id = :user_id
+      and r.status in ({_BUYER_ACTIVE_SQL})
+    order by r.created_at desc
+""")
+
+
+@dataclass(frozen=True)
+class MyReservationItem:
+    id: UUID
+    sale_id: UUID
+    status: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class MyReservationsView:
+    # Одно время на весь ответ: клиент считает остаток брони по смещению
+    # от него, а не по часам браузера (ADR-009).
+    server_time: datetime
+    reservations: list[MyReservationItem]
+
+
+async def list_my_active_reservations(
+    session: AsyncSession, *, user_id: UUID
+) -> MyReservationsView:
+    """Брони покупателя в held и paying, свежие сверху."""
+    server_time = await get_server_time(session)
+    result = await session.execute(LIST_BUYER_ACTIVE_SQL, {"user_id": user_id})
+    return MyReservationsView(
+        server_time=server_time,
+        reservations=[MyReservationItem(**row._mapping) for row in result],
+    )
+
+
+async def explain_cancel_failure(
+    session: AsyncSession, reservation_id: UUID, user_id: UUID
+) -> CancelOutcome:
+    """Почему UPDATE не изменил строку. Решение уже принято, это только ответ."""
+    row = (
+        await session.execute(RESERVATION_STATE_SQL, {"reservation_id": reservation_id})
+    ).one_or_none()
+
+    # Чужую бронь не отличаем от несуществующей: иначе по коду ответа можно
+    # было бы перебором выяснять, какие брони существуют.
+    if row is None or row.user_id != user_id:
+        raise CancelError(CancelRefusal.RESERVATION_NOT_FOUND)
+
+    status = ReservationStatus(row.status)
+    if status in RELEASED_STATUSES:
+        return CancelOutcome.ALREADY_RELEASED
+    if status in NOT_CANCELLABLE_STATUSES:
+        raise CancelError(CancelRefusal.NOT_CANCELLABLE)
+
+    # Статус held, но UPDATE строку не нашёл: состояние изменилось между двумя
+    # запросами. Защитная ветка, в норме недостижима.
+    logger.warning(
+        "отмена не удалась при статусе held, состояние изменилось (reservation_id=%s)",
+        reservation_id,
+    )
+    raise CancelError(CancelRefusal.NOT_CANCELLABLE)
+
+
+async def cancel_reservation(
+    session: AsyncSession,
+    *,
+    reservation_id: UUID,
+    user_id: UUID,
+) -> CancelOutcome:
+    """Отменить свою бронь в held и вернуть единицу товара.
+
+    Смена статуса и уменьшение held — в одной транзакции (ADR-002).
+    """
+    try:
+        sale_id = await session.scalar(
+            CANCEL_HELD_SQL, {"reservation_id": reservation_id, "user_id": user_id}
+        )
+        if sale_id is not None:
+            await session.execute(RELEASE_UNIT_SQL, {"sale_id": sale_id})
+            await session.commit()
+            return CancelOutcome.CANCELLED
+
+        outcome = await explain_cancel_failure(session, reservation_id, user_id)
+    except CancelError:
+        await session.rollback()
+        raise
+
+    await session.rollback()  # ничего не меняли
+    return outcome
 
 
 async def explain_refusal(session: AsyncSession, sale_id: UUID) -> ReserveRefusal:
