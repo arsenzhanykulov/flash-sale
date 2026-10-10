@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models import ReservationStatus
+from app.services.locks import lock_sale
 from app.services.server_time import get_server_time
 
 logger = logging.getLogger(__name__)
@@ -158,14 +159,6 @@ RESERVATION_SALE_SQL = text("""
     where id = :reservation_id and user_id = :user_id
 """)
 
-# Инвариант 10: порядок блокировок sales → reservations. Резерв берёт строку
-# sales первой (held = held + 1), поэтому и отмена обязана начинать с неё.
-# Пока отмена захватывала бронь раньше распродажи, одновременные отмена
-# и резерв одного покупателя давали взаимную блокировку: резерв держал sales
-# и ждал уникальный индекс по reservations, отмена держала бронь и ждала
-# sales (ADR-018).
-LOCK_SALE_SQL = text("select id from sales where id = :sale_id for update")
-
 # Запускается, только если UPDATE не изменил строку, — исключительно чтобы
 # выбрать ответ.
 RESERVATION_STATE_SQL = text("select user_id, status from reservations where id = :reservation_id")
@@ -257,7 +250,7 @@ async def cancel_reservation(
             # Брони нет или она чужая — explain вернёт 404.
             outcome = await explain_cancel_failure(session, reservation_id, user_id)
         else:
-            await session.execute(LOCK_SALE_SQL, {"sale_id": sale_id})
+            await lock_sale(session, sale_id)
             cancelled_sale_id = await session.scalar(
                 CANCEL_HELD_SQL, {"reservation_id": reservation_id, "user_id": user_id}
             )
