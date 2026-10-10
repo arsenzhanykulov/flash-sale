@@ -35,11 +35,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_ttl_minutes: int = 1440
 
-    # ВРЕМЕННО. Пауза между чтением остатка и записью в наивной версии резерва —
-    # расширяет окно гонки, чтобы её можно было воспроизвести руками.
-    # Уйдёт вместе с app/services/reservations.py:create_reservation_naive.
-    # В .env.example намеренно не вынесено: это не настройка продукта.
-    naive_reserve_delay_ms: int = 0
+    # Инвариант 3: бронь в held живёт 10 минут. Срок здесь, а не в схеме БД:
+    # это бизнес-правило, в схеме его смена требовала бы миграции.
+    reservation_ttl_seconds: int = 600
 
     @field_validator("cors_origins", mode="before")
     @classmethod
