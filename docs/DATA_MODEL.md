@@ -86,7 +86,8 @@ RETURNING id;
 | idempotency_key | text UNIQUE NOT NULL | передаётся в заглушку |
 | provider_payment_id | text | id в заглушке |
 | status | text NOT NULL | `pending` \| `succeeded` \| `declined` |
-| last_checked_at | timestamptz | для сверки зависших |
+| last_checked_at | timestamptz | когда сверка последний раз спрашивала провайдера |
+| reconcile_attempts | int default 0 | число проверок; по нему растёт интервал (ADR-023) |
 | created_at, updated_at | timestamptz | |
 
 ## outbox
@@ -102,6 +103,9 @@ RETURNING id;
 | created_at, sent_at | timestamptz | |
 
 Вставка: `INSERT ... ON CONFLICT (dedup_key) DO NOTHING`.
+
+Частичный индекс `payments (last_checked_at NULLS FIRST) WHERE status = 'pending'` —
+выборка кандидатов для сверки: незавершённых платежей всегда немного.
 
 ## Триггер уведомлений
 

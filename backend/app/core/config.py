@@ -57,6 +57,20 @@ class Settings(BaseSettings):
     payment_webhook_secret: str = "dev-only-webhook-secret"
     payment_request_timeout_seconds: float = Field(default=5.0, gt=0)
 
+    # Сверка зависших платежей (ADR-023). Выключается только явным флагом:
+    # случайный ноль в интервале не должен молча останавливать досчёт заказов.
+    reconciler_enabled: bool = True
+    reconcile_interval_seconds: int = Field(default=5, gt=0)
+    # Льготный период: свежим платежам даём шанс получить вебхук, не дёргая
+    # провайдера зря.
+    reconcile_grace_seconds: int = Field(default=10, ge=0)
+    # Нарастающий интервал между проверками одного платежа: base * 2^попытки,
+    # но не больше max. Потолок — это и обещание клиенту: при потерянном
+    # вебхуке заказ досчитается не позже чем через reconcile_backoff_max.
+    reconcile_backoff_base_seconds: int = Field(default=5, gt=0)
+    reconcile_backoff_max_seconds: int = Field(default=300, gt=0)
+    reconcile_batch_size: int = Field(default=50, gt=0)
+
     # Окно склейки live-обновлений (ADR-020). Сигналы, пришедшие за это время,
     # обрабатываются одной пачкой: пачка броней даёт один запрос к БД и одну
     # рассылку. Осязаемый компромисс задержка/нагрузка, поэтому настройка.
