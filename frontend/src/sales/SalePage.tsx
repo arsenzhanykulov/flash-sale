@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 
 import { ApiError, api } from '../api'
-import type { Sale, SaleStatus } from '../api'
+import type { ProviderState, Sale, SaleStatus } from '../api'
 import { useAuth } from '../auth/authContext'
 import { CartPanel } from '../cart/CartPanel'
 import { announceCartChanged } from '../cart/cartChannel'
 import { useMyReservations } from '../cart/useMyReservations'
+import { useMyOrders } from '../orders/useMyOrders'
 import { STATUS_LABELS, formatDateTime, formatMoney } from '../format'
 import { Countdown } from '../time/Countdown'
 import { useServerClock } from '../time/serverClock'
@@ -21,6 +22,15 @@ const RESERVE_ERRORS: Record<string, string> = {
   not_started: 'Распродажа ещё не началась',
   ended: 'Распродажа уже завершена',
   sale_not_found: 'Распродажа не найдена',
+}
+
+const PAY_ERRORS: Record<string, string> = {
+  reservation_expired: 'Бронь истекла — единица вернулась на витрину',
+  sale_ended: 'Распродажа завершена — оплату начать уже нельзя',
+  reservation_cancelled: 'Бронь отменена',
+  payment_failed: 'Предыдущая оплата была отклонена, бронь больше не действует',
+  reservation_not_found: 'Бронь не найдена',
+  sale_not_payable: 'Оплата сейчас недоступна',
 }
 
 const CANCEL_ERRORS: Record<string, string> = {
@@ -49,6 +59,7 @@ export function SalePage() {
   const { sale, error, loading, refetch } = useSale(saleId)
   const { snapshot, connection } = useSaleLive(saleId)
   const { reservations, refresh: refreshCart } = useMyReservations()
+  const { orders, hasPending, refresh: refreshOrders } = useMyOrders()
   const { nowMs, synced } = useServerClock()
 
   const [reserving, setReserving] = useState(false)
@@ -56,6 +67,9 @@ export function SalePage() {
   const [cancelling, setCancelling] = useState(false)
   const [cancelError, setCancelError] = useState<string | null>(null)
   const [expiredNotice, setExpiredNotice] = useState(false)
+  const [paying, setPaying] = useState(false)
+  const [payError, setPayError] = useState<string | null>(null)
+  const [providerState, setProviderState] = useState<ProviderState | null>(null)
 
   // Изменяемую часть берём из live-снимка, когда он есть: остаток и статус
   // обновляются без перезагрузки. Товар, цена и окно неизменны и приходят
@@ -76,6 +90,32 @@ export function SalePage() {
   }, [boundaryPassed, refetch])
 
   const reservation = reservations.find((item) => item.sale_id === saleId) ?? null
+  const order = orders.find((item) => item.sale_id === saleId) ?? null
+
+  // Итог оплаты без перезагрузки: снимок по WS приходит, потому что оплата
+  // меняет счётчики распродажи. Сам снимок про наш заказ ничего не знает
+  // (сокет публичный), поэтому по нему перезапрашиваем свои заказы и корзину.
+  // Редкий опрос как подстраховка живёт в useMyOrders.
+  const snapshotAt = snapshot?.server_time ?? null
+  useEffect(() => {
+    if (snapshotAt === null || !hasPending) return
+    refreshOrders()
+    refreshCart()
+  }, [snapshotAt, hasPending, refreshOrders, refreshCart])
+
+  // Распродажа закрылась, пока у нас была корзина в held: воркер снял бронь.
+  const hadHeldCart = useRef(false)
+  const [closedNotice, setClosedNotice] = useState(false)
+  useEffect(() => {
+    if (reservation?.status === 'held') {
+      hadHeldCart.current = true
+      return
+    }
+    if (status === 'ended' && reservation === null && hadHeldCart.current) {
+      hadHeldCart.current = false
+      setClosedNotice(true)
+    }
+  }, [reservation, status])
 
   const handleExpired = useCallback(() => {
     setExpiredNotice(true)
@@ -106,6 +146,30 @@ export function SalePage() {
       refreshCart()
     } finally {
       setReserving(false)
+    }
+  }
+
+  async function handlePay() {
+    if (token === null || reservation === null) return
+    setPayError(null)
+    setPaying(true)
+    try {
+      const result = await api.pay(reservation.id, token)
+      setProviderState(result.provider_state)
+      refreshCart()
+      refreshOrders()
+      if (user !== null) announceCartChanged(user.id)
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 401) {
+        navigate('/login')
+        return
+      }
+      setPayError(describe(cause, PAY_ERRORS, 'Не удалось начать оплату'))
+      // Отказ почти всегда означает, что состояние изменилось.
+      refetch()
+      refreshCart()
+    } finally {
+      setPaying(false)
     }
   }
 
@@ -207,6 +271,10 @@ export function SalePage() {
           {expiredNotice && reservation === null && (
             <p className="notice">Бронь истекла — единица вернулась на витрину.</p>
           )}
+          {closedNotice && (
+            <p className="notice">Распродажа завершена, корзина очищена.</p>
+          )}
+          {reservation === null && order !== null && <OrderOutcome status={order.status} />}
           {!synced && <p className="muted">Серверное время недоступно, таймер приблизительный.</p>}
         </div>
       </div>
@@ -215,14 +283,33 @@ export function SalePage() {
         <CartPanel
           key={reservation.id}
           reservation={reservation}
+          order={order}
           onExpired={handleExpired}
           onCancel={() => void handleCancel()}
+          onPay={() => void handlePay()}
           cancelling={cancelling}
-          error={cancelError}
+          paying={paying}
+          providerState={providerState}
+          error={payError ?? cancelError}
         />
       )}
     </article>
   )
+}
+
+function OrderOutcome({ status }: { status: string }) {
+  if (status === 'paid') {
+    return (
+      <p className="notice">
+        Оплачено. Заказ виден в <Link to="/orders">моих заказах</Link>.
+      </p>
+    )
+  }
+  if (status === 'failed') {
+    return <p className="error">Оплата отклонена — единица вернулась на витрину.</p>
+  }
+  // pending_payment без брони быть не должно, но молчать тоже не стоит.
+  return <p className="muted">Оплата в обработке.</p>
 }
 
 function ConnectionIndicator({ state }: { state: ConnectionState }) {

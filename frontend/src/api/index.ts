@@ -6,13 +6,28 @@
  * хостовое: запрос делает браузер, а он имени сервиса compose не знает.
  */
 
-import type { LoginResponse, MyReservations, Reservation, Sale, SaleSnapshot, ServerTime } from './types'
+import type {
+  LoginResponse,
+  MyOrders,
+  MyReservations,
+  PayResult,
+  Reservation,
+  Sale,
+  SaleSnapshot,
+  ServerTime,
+} from './types'
 
 export type {
   CancelErrorCode,
   LoginResponse,
+  MyOrders,
   MyReservationItem,
   MyReservations,
+  Order,
+  OrderStatus,
+  PayErrorCode,
+  PayResult,
+  ProviderState,
   Reservation,
   ReserveErrorCode,
   Sale,
@@ -151,4 +166,9 @@ export const api = {
     request<void>(`/api/reservations/${reservationId}`, { method: 'DELETE', token }),
 
   myReservations: (token: string) => request<MyReservations>('/api/reservations/me', { token }),
+
+  pay: (reservationId: string, token: string) =>
+    request<PayResult>(`/api/reservations/${reservationId}/pay`, { method: 'POST', token }),
+
+  myOrders: (token: string) => request<MyOrders>('/api/orders/me', { token }),
 }
