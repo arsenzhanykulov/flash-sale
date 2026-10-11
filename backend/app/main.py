@@ -12,6 +12,7 @@ from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.db import reset_engine
 from app.services.live_updates import SaleChangeListener, hub
+from app.services.payments import run_reconciler
 from app.services.sweeper import run_sweeper
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         logger.warning(
             "SWEEPER_ENABLED=false: истёкшие брони не возвращаются на витрину, "
             "занятые единицы останутся занятыми"
+        )
+
+    if settings.reconciler_enabled:
+        background.append(asyncio.create_task(run_reconciler(), name="reconciler"))
+    else:
+        logger.warning(
+            "RECONCILER_ENABLED=false: платежи без вебхука останутся в pending, "
+            "заказы не будут досчитаны"
         )
 
     listener = SaleChangeListener(hub)

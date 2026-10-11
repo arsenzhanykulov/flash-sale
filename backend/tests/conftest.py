@@ -377,14 +377,25 @@ class FakePaymentProvider:
 
     `unavailable=True` изображает недоступность платёжной системы. Повторный
     вызов с тем же ключом возвращает тот же платёж — как и настоящая заглушка
-    (ADR-021).
+    (ADR-021), и отдаёт при этом АКТУАЛЬНЫЙ статус: именно на это опирается
+    сверка (проверено на настоящей заглушке, ADR-023).
+
+    `status_by_key` позволяет задать исход для конкретного платежа — так
+    изображается «вебхук потерялся, а у провайдера уже succeeded».
     """
 
     def __init__(self, *, unavailable: bool = False, status: str = "pending") -> None:
         self.unavailable = unavailable
         self.status = status
+        self.status_by_key: dict[str, str] = {}
         self.calls: list[ProviderCall] = []
         self._by_key: dict[str, str] = {}
+
+    def set_status(self, idempotency_key: str, status: str) -> None:
+        self.status_by_key[idempotency_key] = status
+
+    def calls_for(self, idempotency_key: str) -> list[ProviderCall]:
+        return [call for call in self.calls if call.idempotency_key == idempotency_key]
 
     async def create_payment(
         self,
@@ -408,7 +419,12 @@ class FakePaymentProvider:
             raise ProviderUnavailable("тестовая недоступность")
 
         provider_payment_id = self._by_key.setdefault(idempotency_key, f"stub-{uuid4().hex[:12]}")
-        return ProviderPayment(provider_payment_id=provider_payment_id, status=self.status)
+        return ProviderPayment(
+            provider_payment_id=provider_payment_id,
+            # Статус по ключу, если задан: так изображается «провайдер уже
+            # решил, а вебхук потерялся».
+            status=self.status_by_key.get(idempotency_key, self.status),
+        )
 
     async def get_payment(self, provider_payment_id: str):
         from app.services.payments import ProviderPayment, ProviderUnavailable

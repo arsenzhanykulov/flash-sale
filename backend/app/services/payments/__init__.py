@@ -20,6 +20,11 @@ from app.services.payments.provider import (
     ProviderUnavailable,
     callback_url,
 )
+from app.services.payments.reconciler import (
+    ReconcileReport,
+    reconcile_once,
+    run_reconciler,
+)
 
 _provider: PaymentProvider = HttpPaymentProvider()
 
@@ -45,10 +50,13 @@ __all__ = [
     "ProviderPayment",
     "ProviderState",
     "ProviderUnavailable",
+    "ReconcileReport",
     "apply_payment_result",
     "callback_url",
     "find_payment_by_idempotency_key",
     "get_payment_provider",
+    "reconcile_once",
+    "run_reconciler",
     "set_payment_provider",
     "start_payment",
 ]
