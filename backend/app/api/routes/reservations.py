@@ -164,6 +164,10 @@ PAY_REFUSALS: dict[PayRefusal, tuple[int, str]] = {
         "Бронь истекла — единица вернулась на витрину",
     ),
     PayRefusal.RESERVATION_CANCELLED: (status.HTTP_409_CONFLICT, "Бронь отменена"),
+    PayRefusal.SALE_ENDED: (
+        status.HTTP_409_CONFLICT,
+        "Распродажа завершена — оплату начать уже нельзя",
+    ),
     PayRefusal.PAYMENT_FAILED: (
         status.HTTP_409_CONFLICT,
         "Предыдущая оплата была отклонена, бронь больше не действует",

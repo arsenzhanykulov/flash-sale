@@ -62,9 +62,28 @@ def order_paid(payload: dict) -> MailContent:
     )
 
 
+def sale_closed_cart_released(payload: dict) -> MailContent:
+    """Распродажа закончилась, бронь снята без оплаты.
+
+    Уходит только владельцам корзин в `held`: у кого оплата уже началась,
+    она доводится до конца (инвариант 4), и они получат письмо об оплате.
+    """
+    product = payload["product_name"]
+    return MailContent(
+        subject=f"Распродажа завершена — {product}",
+        body=(
+            "Здравствуйте!\n\n"
+            f"Распродажа «{product}» закончилась, а оплата так и не поступила.\n"
+            "Бронь снята, товар вернулся в продажу.\n\n"
+            "Если вы всё же хотели купить — следите за новыми распродажами.\n"
+        ),
+    )
+
+
 # Реестр шаблонов по виду письма. Новый вид — новая функция и строка здесь.
 TEMPLATES: dict[str, Callable[[dict], MailContent]] = {
     "order_paid": order_paid,
+    "sale_closed_cart_released": sale_closed_cart_released,
 }
 
 

@@ -340,10 +340,12 @@ async def test_unknown_kind_fails_without_breaking_the_pass(
 ) -> None:
     """Неизвестный kind → failed с причиной, остальные письма проходят."""
     dedup_key = f"unknown_kind:{uuid4()}"
+    # Заведомо отсутствующий вид письма: все реальные виды есть в реестре
+    # TEMPLATES, и добавление нового не должно ломать этот тест.
     await session.execute(
         text("""
             insert into outbox (kind, dedup_key, recipient, payload, status)
-            values ('sale_closed_cart_released', :key, 'buyer@example.com',
+            values ('never_implemented_kind', :key, 'buyer@example.com',
                     '{}'::jsonb, 'pending')
         """),
         {"key": dedup_key},
@@ -358,7 +360,7 @@ async def test_unknown_kind_fails_without_breaking_the_pass(
     assert "нет шаблона" in row["last_error"]
     assert row["locked_until"] is None
     # Отправлять было нечего, но проход не упал.
-    assert all("sale_closed" not in (m["Subject"] or "") for m in mailer.sent)
+    assert mailer.sent == []
 
 
 async def test_incomplete_payload_fails_with_reason(

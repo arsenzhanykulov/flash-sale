@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     # Аренда строки на время отправки.
     outbox_lease_seconds: int = Field(default=30, gt=0)
 
+    # Закрытие распродаж по времени (ADR-025). Выключается только явным флагом.
+    sale_closer_enabled: bool = True
+    sale_closer_interval_seconds: int = Field(default=5, gt=0)
+
     @model_validator(mode="after")
     def _smtp_timeout_fits_lease(self) -> "Settings":
         """Таймаут SMTP должен быть заметно меньше аренды.
