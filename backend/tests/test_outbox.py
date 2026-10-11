@@ -56,6 +56,14 @@ class FakeMailer:
     def message_ids(self) -> list[str]:
         return [message["Message-ID"] for message in self.sent]
 
+    def letters_with_id(self, expected_id: str) -> list[EmailMessage]:
+        """Письма с конкретным Message-ID.
+
+        Проход отправки идёт по всей таблице, где лежат письма других тестов,
+        поэтому общее число отправленных ничего не доказывает — смотрим своё.
+        """
+        return [m for m in self.sent if m["Message-ID"] == expected_id]
+
 
 @pytest.fixture
 def mailer() -> FakeMailer:
@@ -139,8 +147,9 @@ async def test_one_payment_sends_one_letter(
     report = await send_outbox_once(session, mailer)
 
     assert report.sent >= 1
-    assert len(mailer.sent) == 1
-    message = mailer.sent[0]
+    ours = mailer.letters_with_id(message_id(dedup_key))
+    assert len(ours) == 1, f"наше письмо отправлено {len(ours)} раз"
+    message = ours[0]
     assert message["Subject"].startswith("Заказ оплачен —")
     assert order_id in message.get_content()
     # Сумма и товар — из payload строки outbox.
@@ -187,7 +196,8 @@ async def test_double_webhook_and_reconciliation_send_one_letter(
     # Второй проход: письмо уже отправлено, повторять нечего.
     await send_outbox_once(session, mailer)
 
-    assert len(mailer.sent) == 1, f"отправлено писем: {len(mailer.sent)}"
+    ours = mailer.letters_with_id(message_id(dedup_key))
+    assert len(ours) == 1, f"наше письмо отправлено {len(ours)} раз"
     await assert_counters_consistent(session, sale_id)
 
 
@@ -248,7 +258,7 @@ async def test_smtp_failure_schedules_retry(
     await session.commit()
     await send_outbox_once(session, mailer)
 
-    assert len(mailer.sent) == 1
+    assert len(mailer.letters_with_id(message_id(dedup_key))) == 1
     assert (await letter_row(session, dedup_key))["status"] == "sent"
     await assert_counters_consistent(session, sale_id)
 
@@ -314,9 +324,9 @@ async def test_expired_lease_returns_letter_to_work(
     )
     await session.commit()
 
-    # Пока аренда жива, письмо никто не берёт.
-    assert (await send_outbox_once(session, mailer)).claimed == 0
-    assert mailer.sent == []
+    # Пока аренда жива, наше письмо никто не берёт.
+    await send_outbox_once(session, mailer)
+    assert mailer.letters_with_id(message_id(dedup_key)) == []
 
     # Аренда истекла — письмо снова в работе.
     await session.execute(
@@ -330,7 +340,7 @@ async def test_expired_lease_returns_letter_to_work(
 
     await send_outbox_once(session, mailer)
 
-    assert len(mailer.sent) == 1
+    assert len(mailer.letters_with_id(message_id(dedup_key))) == 1
     assert (await letter_row(session, dedup_key))["status"] == "sent"
     await assert_counters_consistent(session, sale_id)
 
@@ -359,8 +369,8 @@ async def test_unknown_kind_fails_without_breaking_the_pass(
     assert row["status"] == "failed"
     assert "нет шаблона" in row["last_error"]
     assert row["locked_until"] is None
-    # Отправлять было нечего, но проход не упал.
-    assert mailer.sent == []
+    # Нашего письма среди отправленных нет, но проход не упал.
+    assert mailer.letters_with_id(message_id(dedup_key)) == []
 
 
 async def test_incomplete_payload_fails_with_reason(
@@ -442,7 +452,7 @@ async def test_empty_outbox_is_noop(session: AsyncSession, mailer: FakeMailer) -
     report = await send_outbox_once(session, mailer)
 
     assert report.claimed == 0
-    assert mailer.sent == []
+    assert mailer.sent == []  # после update выше pending не осталось вовсе
 
 
 # --- проверка против настоящего Mailpit ---------------------------------------

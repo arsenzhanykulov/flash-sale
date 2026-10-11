@@ -75,3 +75,45 @@ export type ReserveErrorCode =
   | 'already_reserved'
 
 export type CancelErrorCode = 'reservation_not_found' | 'not_cancellable'
+
+export type OrderStatus = 'pending_payment' | 'paid' | 'failed'
+
+export interface Order {
+  id: string
+  sale_id: string
+  product_name: string
+  amount_minor: number
+  currency: string
+  status: OrderStatus
+  created_at: string
+  paid_at: string | null
+}
+
+export interface MyOrders {
+  /** Одно время на весь ответ (ADR-009). */
+  server_time: string
+  orders: Order[]
+}
+
+/** Что удалось сделать с платёжной системой. */
+export type ProviderState = 'accepted' | 'awaiting_provider'
+
+export interface PayResult {
+  order_id: string
+  payment_id: string
+  order_status: OrderStatus
+  payment_status: string
+  amount_minor: number
+  currency: string
+  provider_state: ProviderState
+  /** true, если оплата была начата раньше: повторный клик не создал второй заказ. */
+  already_started: boolean
+}
+
+export type PayErrorCode =
+  | 'reservation_not_found'
+  | 'reservation_expired'
+  | 'reservation_cancelled'
+  | 'payment_failed'
+  | 'sale_ended'
+  | 'sale_not_payable'

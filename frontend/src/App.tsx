@@ -2,6 +2,7 @@ import { Link, Navigate, Route, Routes } from 'react-router-dom'
 
 import { useAuth } from './auth/authContext'
 import { LoginPage } from './auth/LoginPage'
+import { OrdersPage } from './orders/OrdersPage'
 import { SalePage } from './sales/SalePage'
 import { SalesListPage } from './sales/SalesListPage'
 
@@ -20,6 +21,9 @@ function Header() {
           </Link>
         ) : (
           <>
+            <Link to="/orders" className="button button--ghost">
+              Мои заказы
+            </Link>
             <span className="header__user">{user.email}</span>
             <button type="button" className="button button--ghost" onClick={logout}>
               Выйти
@@ -39,6 +43,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<SalesListPage />} />
           <Route path="/sales/:saleId" element={<SalePage />} />
+          <Route path="/orders" element={<OrdersPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
