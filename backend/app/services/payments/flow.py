@@ -42,6 +42,9 @@ def order_paid_dedup_key(order_id: UUID) -> str:
 
 class PayRefusal(StrEnum):
     RESERVATION_NOT_FOUND = "reservation_not_found"
+    # Окно распродажи закрылось: новую оплату не начинаем. Уже начатые
+    # это не затрагивает — инвариант 4.
+    SALE_ENDED = "sale_ended"
     RESERVATION_EXPIRED = "reservation_expired"
     RESERVATION_CANCELLED = "reservation_cancelled"
     PAYMENT_FAILED = "payment_failed"
@@ -88,14 +91,22 @@ RESERVATION_SALE_SQL = text("""
 
 # Решение принимает это условие: `status = 'held'` и живой срок проверяются
 # тем же оператором, который и записывает.
+# Окно распродажи проверяется ТЕМ ЖЕ оператором, что и переход: отдельное
+# чтение дало бы зазор, в который успевает закрыться распродажа.
+# Условие только на переход held → paying — уже начатые оплаты
+# это не затрагивает (инвариант 4).
 START_PAYING_SQL = text(f"""
-    update reservations
+    update reservations r
     set status = '{ReservationStatus.PAYING.value}', updated_at = now()
-    where id = :reservation_id
-      and user_id = :user_id
-      and status = '{ReservationStatus.HELD.value}'
-      and expires_at > now()
-    returning sale_id
+    where r.id = :reservation_id
+      and r.user_id = :user_id
+      and r.status = '{ReservationStatus.HELD.value}'
+      and r.expires_at > now()
+      and exists (
+          select 1 from sales s
+          where s.id = r.sale_id and now() < s.end_at and s.closed_at is null
+      )
+    returning r.sale_id
 """)
 
 INSERT_ORDER_SQL = text(f"""
@@ -127,8 +138,12 @@ EXISTING_ORDER_SQL = text("""
 """)
 
 RESERVATION_STATE_SQL = text("""
-    select status, expires_at <= now() as expired
-    from reservations where id = :reservation_id and user_id = :user_id
+    select
+        r.status,
+        r.expires_at <= now() as expired,
+        now() >= s.end_at or s.closed_at is not null as sale_ended
+    from reservations r join sales s on s.id = r.sale_id
+    where r.id = :reservation_id and r.user_id = :user_id
 """)
 
 
@@ -249,6 +264,10 @@ async def _resume_or_refuse(
     if status is ReservationStatus.HELD and state.expired:
         # Срок истёк, свипер ещё не дошёл — для клиента это то же, что expired.
         raise PayError(PayRefusal.RESERVATION_EXPIRED)
+    if status is ReservationStatus.HELD and state.sale_ended:
+        # Бронь ещё жива, но распродажа закончилась: воркер закрытия либо
+        # уже прошёл, либо пройдёт вот-вот. Новую оплату не начинаем.
+        raise PayError(PayRefusal.SALE_ENDED)
     if status is ReservationStatus.EXPIRED:
         raise PayError(PayRefusal.RESERVATION_EXPIRED)
     if status is ReservationStatus.CANCELLED:

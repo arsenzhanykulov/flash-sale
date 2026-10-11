@@ -14,6 +14,7 @@ from app.core.db import reset_engine
 from app.services.live_updates import SaleChangeListener, hub
 from app.services.outbox import run_outbox_sender
 from app.services.payments import run_reconciler
+from app.services.sale_closer import run_sale_closer
 from app.services.sweeper import run_sweeper
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         background.append(asyncio.create_task(run_outbox_sender(), name="outbox-sender"))
     else:
         logger.warning("OUTBOX_ENABLED=false: письма останутся в outbox и не будут отправлены")
+
+    if settings.sale_closer_enabled:
+        background.append(asyncio.create_task(run_sale_closer(), name="sale-closer"))
+    else:
+        logger.warning(
+            "SALE_CLOSER_ENABLED=false: закончившиеся распродажи останутся "
+            "открытыми, брони в них не будут сняты"
+        )
 
     listener = SaleChangeListener(hub)
     background.append(asyncio.create_task(listener.run(), name="live-updates"))
