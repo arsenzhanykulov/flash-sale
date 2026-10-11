@@ -23,14 +23,17 @@ seed:
 race:
 	docker compose exec backend python -m app.scripts.race
 
-## test: тесты бэкенда на реальном Postgres
+## test: тесты бэкенда на реальном Postgres и тесты платёжной заглушки
 test:
 	docker compose exec backend pytest -q
+	docker compose exec payment-stub pytest -q
 
 ## lint: линт и проверка типов, бэкенд и фронтенд
 lint:
 	docker compose exec backend ruff check .
 	docker compose exec backend ruff format --check .
+	docker compose exec payment-stub ruff check .
+	docker compose exec payment-stub ruff format --check .
 	docker compose exec frontend npm run lint
 	docker compose exec frontend npm run typecheck
 

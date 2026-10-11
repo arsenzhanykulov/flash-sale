@@ -42,6 +42,7 @@ make seed    # docker compose exec backend python -m app.scripts.seed
 | Витрина | http://localhost:5173 |
 | Swagger (живая документация API) | http://localhost:8000/docs |
 | Письма (Mailpit) | http://localhost:8025 |
+| Платёжная заглушка | http://localhost:8100 |
 | API | http://localhost:8000 |
 
 Пароля нет (ADR-007): на экране входа достаточно email. `make seed` создаёт трёх
@@ -243,6 +244,73 @@ API, **ноль дополнительных запросов к бэкенду*
 состояние перезапрашивается раз в секунду, но не дольше 30 секунд — дальше
 показывается «не удалось обновить корзину, обновите страницу».
 
+## Платёжная заглушка
+
+Отдельный сервис `payment-stub` изображает платёжного провайдера. Он не
+переиспользует код и БД основного сервиса — у него своё хранилище SQLite
+в отдельном volume (ADR-021): иначе не проверялись бы сетевые сбои,
+асинхронный ответ вебхуком и независимый перезапуск «чужой» системы.
+
+**Страничка управления: http://localhost:8100** — текущий режим с переключателем,
+список платежей и кнопки «одобрить / отклонить» у зависших. Обновляется сама
+раз в две секунды.
+
+### Режимы
+
+| Режим | Что делает |
+|---|---|
+| `approve` | через заданную задержку платёж становится `succeeded` |
+| `decline` | через заданную задержку платёж становится `declined` |
+| `hang` | платёж навсегда остаётся `pending` — отпускается только вручную |
+
+Режим по умолчанию задаётся в `.env` (`PAYMENT_MODE`, `PAYMENT_DELAY_MS`),
+переключается на лету на страничке или запросом:
+
+```bash
+curl -X POST localhost:8100/control/mode -H 'Content-Type: application/json' \
+  -d '{"mode":"hang"}'
+
+# задержка ответа и дублирование вебхуков
+curl -X POST localhost:8100/control/mode -H 'Content-Type: application/json' \
+  -d '{"mode":"approve","delay_ms":3000,"duplicate_webhooks":true}'
+```
+
+Режим запоминается в хранилище заглушки, поэтому переключение не теряется
+при перезапуске. У каждого платежа остаётся **тот режим, с которым он создан**:
+смена режима на лету не меняет судьбу уже начатых платежей.
+
+`duplicate_webhooks` присылает результат дважды — так проверяется идемпотентность
+приёма на стороне backend.
+
+### Как отпустить зависший платёж
+
+На страничке у платежа в статусе «ждёт» есть кнопки **одобрить** и **отклонить**.
+То же запросом:
+
+```bash
+curl -X POST localhost:8100/payments/<payment_id>/resolve \
+  -H 'Content-Type: application/json' -d '{"result":"approve"}'
+```
+
+Повторное решение по тому же платежу даёт `409 already_resolved` — первое
+не перебивается.
+
+### Что ещё стоит знать
+
+- `POST /payments` идемпотентен по `idempotency_key`: первый вызов — **202**,
+  повторный с тем же ключом — **200** и тот же платёж, тот же ключ с другой
+  суммой — **409** `amount_mismatch`.
+- Вебхук подписан: `X-Signature: sha256=<hex HMAC-SHA256 тела>`, секрет общий
+  через `PAYMENT_WEBHOOK_SECRET`.
+- **Вебхук может потеряться.** Повторы идут с нарастающей паузой (5 попыток),
+  после чего заглушка сдаётся — ровно как настоящий провайдер. Статус при этом
+  остаётся доступен через `GET /payments/{id}`, и потерю закрывает сверка
+  на стороне backend.
+- Перезапуск во время задержки не оставляет платёж висеть: срок хранится в БД,
+  и при старте просроченные доделываются. Платежи в режиме `hang` не трогаются.
+- Внутри docker-сети backend обращается к заглушке по `http://payment-stub:8000`,
+  а заглушка стучится обратно на `http://backend:8000`.
+
 ## Если порт занят
 
 Нужны свободные **8000** (API) и **5173** (витрина), а также **1025** и **8025** (Mailpit).
@@ -299,7 +367,7 @@ make up
 ## Тесты и линт
 
 ```bash
-make test    # docker compose exec backend pytest -q
+make test    # тесты backend и платёжной заглушки
 make lint    # ruff + oxlint + tsc, см. ниже
 ```
 
@@ -308,8 +376,16 @@ make lint    # ruff + oxlint + tsc, см. ниже
 ```bash
 docker compose exec backend ruff check .
 docker compose exec backend ruff format --check .
+docker compose exec payment-stub ruff check .
+docker compose exec payment-stub ruff format --check .
 docker compose exec frontend npm run lint        # oxlint
 docker compose exec frontend npm run typecheck   # tsc
+```
+
+У заглушки свой прогон тестов — она изолирована от основного сервиса (ADR-021):
+
+```bash
+docker compose exec payment-stub pytest -q
 ```
 
 Линтер фронтенда — **oxlint** (конфиг `frontend/.oxlintrc.json`), он идёт
@@ -328,6 +404,7 @@ docker compose exec frontend npm run typecheck   # tsc
 ```
 backend/     FastAPI: api/routes + api/schemas → services → models, миграции Alembic
 frontend/    Vite + React + TypeScript; все запросы через единственный модуль src/api
+payment-stub/  эмулятор платёжки: свой сервис, своё хранилище SQLite
 docs/        решения (ADR), модель данных, журнал разработки, лог промптов
 docker-compose.yml   postgres, mailpit, backend, frontend
 Makefile     короткие обёртки над docker compose
@@ -447,9 +524,10 @@ SQLAlchemy (15 соединений), а не под `max_connections` Postgres 
 
 **День 3** — впереди:
 
-- **оплата** через сервис-заглушку `payment-stub` (режимы approve / decline / hang):
-  переход брони `held → paying → paid`, идемпотентность по `Idempotency-Key`,
-  сверка зависших платежей. Кнопка «Оплатить» в корзине уже на месте и неактивна
+- **оплата**: переход брони `held → paying → paid`, идемпотентность
+  по `Idempotency-Key`, сверка зависших платежей. Кнопка «Оплатить» в корзине
+  уже на месте и неактивна. Сама заглушка (`payment-stub`) готова — см. раздел
+  «Платёжная заглушка»; осталась интеграция со стороны backend
 - **письма** через transactional outbox — ровно одно письмо на событие,
   с проверкой через API Mailpit
 - **закрытие распродажи** воркером по окончании окна: снять оставшиеся `held`
