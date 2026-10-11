@@ -1,0 +1,38 @@
+[project]
+name = "payment-stub"
+version = "0.1.0"
+description = "Эмулятор платёжного провайдера: approve / decline / hang"
+requires-python = "==3.12.*"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    # Отправка вебхуков на backend.
+    "httpx>=0.28",
+    "pydantic-settings>=2.6",
+    # Своё хранилище, отдельное от БД основного сервиса (ADR-021).
+    # SQLAlchemy не нужен: запросов мало, и все они простые.
+    "aiosqlite>=0.20",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"

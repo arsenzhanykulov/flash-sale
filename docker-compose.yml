@@ -99,5 +99,38 @@ services:
       retries: 6
       start_period: 30s
 
+  payment-stub:
+    build: ./payment-stub
+    restart: unless-stopped
+    environment:
+      # Своё хранилище в volume: заглушка изображает чужую систему,
+      # её состояние живёт отдельно от нашей БД (ADR-021).
+      DATABASE_PATH: /data/payments.db
+      PAYMENT_MODE: ${PAYMENT_MODE:-approve}
+      PAYMENT_DELAY_MS: ${PAYMENT_DELAY_MS:-0}
+      DUPLICATE_WEBHOOKS: ${DUPLICATE_WEBHOOKS:-false}
+      WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET}
+    ports:
+      # Страничка управления: http://localhost:8100
+      - "${PAYMENT_STUB_PORT:-8100}:8000"
+    volumes:
+      - paystub:/data
+      # Hot reload и прогон тестов без пересборки образа.
+      - ./payment-stub/app:/app/app
+      - ./payment-stub/tests:/app/tests
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.request
+          urllib.request.urlopen("http://localhost:8000/health", timeout=3)
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
 volumes:
   pgdata:
+  paystub:
