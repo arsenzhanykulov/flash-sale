@@ -1,6 +1,6 @@
 from enum import StrEnum
 
-from sqlalchemy import CheckConstraint
+from sqlalchemy import CheckConstraint, Index, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -8,6 +8,7 @@ from app.models.base import (
     Base,
     counter,
     created_at,
+    optional_text,
     required_text,
     status_in,
     timestamptz_null,
@@ -30,7 +31,15 @@ class OutboxMessage(Base):
     """
 
     __tablename__ = "outbox"
-    __table_args__ = (CheckConstraint(status_in("status", OutboxStatus), name="status_known"),)
+    __table_args__ = (
+        CheckConstraint(status_in("status", OutboxStatus), name="status_known"),
+        # Отправитель смотрит только на неотправленные письма.
+        Index(
+            "ix_outbox_pending_next_attempt_at",
+            "next_attempt_at",
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
 
     id: Mapped[uuid_pk]
     kind: Mapped[required_text]
@@ -39,5 +48,12 @@ class OutboxMessage(Base):
     payload: Mapped[dict] = mapped_column(JSONB)
     status: Mapped[required_text]
     attempts: Mapped[counter]
+    # Когда можно пробовать снова. Нарастающая пауза живёт в БД, чтобы
+    # перезапуск не сбрасывал прогресс повторов (ADR-024).
+    next_attempt_at: Mapped[created_at]
+    # Аренда строки на время отправки: если процесс упал, по истечении
+    # аренды письмо само вернётся в работу.
+    locked_until: Mapped[timestamptz_null]
+    last_error: Mapped[optional_text]
     created_at: Mapped[created_at]
     sent_at: Mapped[timestamptz_null]

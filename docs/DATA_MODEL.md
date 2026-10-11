@@ -99,13 +99,18 @@ RETURNING id;
 | recipient | text NOT NULL | |
 | payload | jsonb NOT NULL | |
 | status | text NOT NULL | `pending` \| `sent` \| `failed` |
-| attempts | int default 0 | |
+| attempts | int default 0 | сколько раз пытались отправить |
+| next_attempt_at | timestamptz NOT NULL | когда можно пробовать снова; нарастающая пауза (ADR-024) |
+| locked_until | timestamptz NULL | аренда на время отправки; истекла — строка снова в работе |
+| last_error | text NULL | причина последнего отказа, чтобы не искать в логах |
 | created_at, sent_at | timestamptz | |
 
 Вставка: `INSERT ... ON CONFLICT (dedup_key) DO NOTHING`.
 
 Частичный индекс `payments (last_checked_at NULLS FIRST) WHERE status = 'pending'` —
 выборка кандидатов для сверки: незавершённых платежей всегда немного.
+Такой же частичный индекс `outbox (next_attempt_at) WHERE status = 'pending'` —
+выборка писем к отправке.
 
 ## Триггер уведомлений
 

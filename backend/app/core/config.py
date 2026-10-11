@@ -8,7 +8,7 @@
 from functools import lru_cache
 from typing import Annotated, Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 DEFAULT_CORS_ORIGINS = ["http://localhost:5173"]
@@ -70,6 +70,41 @@ class Settings(BaseSettings):
     reconcile_backoff_base_seconds: int = Field(default=5, gt=0)
     reconcile_backoff_max_seconds: int = Field(default=300, gt=0)
     reconcile_batch_size: int = Field(default=50, gt=0)
+
+    # --- Почта и отправка outbox (ADR-004, ADR-024) ---
+    smtp_host: str = "mailpit"
+    smtp_port: int = Field(default=1025, gt=0)
+    # Таймаут обязателен и проверяется на старте: он должен быть заметно
+    # меньше аренды, иначе медленный SMTP даст дубль в штатной работе —
+    # аренда истечёт, пока первый отправитель ещё ждёт ответа.
+    smtp_timeout_seconds: float = Field(default=10.0, gt=0)
+    mail_from: str = "no-reply@flash-sale.local"
+    mail_from_name: str = "Flash Sale"
+
+    outbox_enabled: bool = True
+    outbox_interval_seconds: int = Field(default=2, gt=0)
+    outbox_batch_size: int = Field(default=20, gt=0)
+    outbox_max_attempts: int = Field(default=5, ge=1)
+    outbox_retry_base_seconds: int = Field(default=5, gt=0)
+    # Аренда строки на время отправки.
+    outbox_lease_seconds: int = Field(default=30, gt=0)
+
+    @model_validator(mode="after")
+    def _smtp_timeout_fits_lease(self) -> "Settings":
+        """Таймаут SMTP должен быть заметно меньше аренды.
+
+        Иначе первый отправитель ещё ждёт SMTP, аренда уже истекла, второй
+        подхватывает ту же строку — и письмо уходит дважды без всякого
+        падения процесса. Требуем двукратный запас.
+        """
+        if self.smtp_timeout_seconds * 2 > self.outbox_lease_seconds:
+            raise ValueError(
+                "SMTP_TIMEOUT_SECONDS должен быть не больше половины "
+                f"OUTBOX_LEASE_SECONDS (сейчас {self.smtp_timeout_seconds} "
+                f"против {self.outbox_lease_seconds}): иначе аренда истечёт, "
+                "пока отправитель ещё ждёт SMTP, и письмо уйдёт дважды"
+            )
+        return self
 
     # Окно склейки live-обновлений (ADR-020). Сигналы, пришедшие за это время,
     # обрабатываются одной пачкой: пачка броней даёт один запрос к БД и одну
