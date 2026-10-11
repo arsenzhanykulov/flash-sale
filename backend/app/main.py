@@ -12,6 +12,7 @@ from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.db import reset_engine
 from app.services.live_updates import SaleChangeListener, hub
+from app.services.outbox import run_outbox_sender
 from app.services.payments import run_reconciler
 from app.services.sweeper import run_sweeper
 
@@ -44,6 +45,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             "RECONCILER_ENABLED=false: платежи без вебхука останутся в pending, "
             "заказы не будут досчитаны"
         )
+
+    if settings.outbox_enabled:
+        background.append(asyncio.create_task(run_outbox_sender(), name="outbox-sender"))
+    else:
+        logger.warning("OUTBOX_ENABLED=false: письма останутся в outbox и не будут отправлены")
 
     listener = SaleChangeListener(hub)
     background.append(asyncio.create_task(listener.run(), name="live-updates"))
