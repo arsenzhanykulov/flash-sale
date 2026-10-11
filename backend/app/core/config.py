@@ -47,6 +47,16 @@ class Settings(BaseSettings):
     # цикл без паузы, поэтому такая настройка роняет старт приложения.
     sweeper_interval_seconds: int = Field(default=2, gt=0)
 
+    # --- Платёжная заглушка (ADR-005, ADR-021) ---
+    # Адрес внутри docker-сети: заглушка — отдельный сервис.
+    payment_stub_url: str = "http://payment-stub:8000"
+    # База для callback_url, который мы передаём заглушке. Тоже внутренний
+    # адрес: вебхук идёт от сервиса к сервису, а не через браузер.
+    payment_callback_base_url: str = "http://backend:8000"
+    # Общий секрет подписи вебхуков — тот же, что у заглушки.
+    payment_webhook_secret: str = "dev-only-webhook-secret"
+    payment_request_timeout_seconds: float = Field(default=5.0, gt=0)
+
     # Окно склейки live-обновлений (ADR-020). Сигналы, пришедшие за это время,
     # обрабатываются одной пачкой: пачка броней даёт один запрос к БД и одну
     # рассылку. Осязаемый компромисс задержка/нагрузка, поэтому настройка.

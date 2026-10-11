@@ -9,13 +9,14 @@
 import asyncio
 import os
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
+import pytest
 import pytest_asyncio
 from alembic import command
 from alembic.config import Config
@@ -358,3 +359,84 @@ async def make_sale(session: AsyncSession) -> MakeSale:
         return sale_id
 
     return _make_sale
+
+
+# --- платёжный провайдер в тестах -------------------------------------------
+
+
+@dataclass
+class ProviderCall:
+    idempotency_key: str
+    amount_minor: int
+    currency: str
+    callback_url: str
+
+
+class FakePaymentProvider:
+    """Фейк заглушки: настоящий сервис в тестах backend не поднимается.
+
+    `unavailable=True` изображает недоступность платёжной системы. Повторный
+    вызов с тем же ключом возвращает тот же платёж — как и настоящая заглушка
+    (ADR-021).
+    """
+
+    def __init__(self, *, unavailable: bool = False, status: str = "pending") -> None:
+        self.unavailable = unavailable
+        self.status = status
+        self.calls: list[ProviderCall] = []
+        self._by_key: dict[str, str] = {}
+
+    async def create_payment(
+        self,
+        *,
+        idempotency_key: str,
+        amount_minor: int,
+        currency: str,
+        callback_url: str,
+    ):
+        from app.services.payments import ProviderPayment, ProviderUnavailable
+
+        self.calls.append(
+            ProviderCall(
+                idempotency_key=idempotency_key,
+                amount_minor=amount_minor,
+                currency=currency,
+                callback_url=callback_url,
+            )
+        )
+        if self.unavailable:
+            raise ProviderUnavailable("тестовая недоступность")
+
+        provider_payment_id = self._by_key.setdefault(idempotency_key, f"stub-{uuid4().hex[:12]}")
+        return ProviderPayment(provider_payment_id=provider_payment_id, status=self.status)
+
+    async def get_payment(self, provider_payment_id: str):
+        from app.services.payments import ProviderPayment, ProviderUnavailable
+
+        if self.unavailable:
+            raise ProviderUnavailable("тестовая недоступность")
+        return ProviderPayment(provider_payment_id=provider_payment_id, status=self.status)
+
+
+@pytest.fixture
+def payment_provider() -> Iterator[FakePaymentProvider]:
+    """Подменяет провайдера на время теста и возвращает его обратно."""
+    from app.services.payments import set_payment_provider
+
+    fake = FakePaymentProvider()
+    previous = set_payment_provider(fake)
+    try:
+        yield fake
+    finally:
+        set_payment_provider(previous)
+
+
+def webhook_headers(body: bytes) -> dict[str, str]:
+    """Подпись вебхука тем же секретом, что знает backend."""
+    import hashlib
+    import hmac
+
+    digest = hmac.new(
+        get_settings().payment_webhook_secret.encode(), body, hashlib.sha256
+    ).hexdigest()
+    return {"Content-Type": "application/json", "X-Signature": f"sha256={digest}"}
