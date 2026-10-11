@@ -9,6 +9,8 @@
 import type {
   LoginResponse,
   MyOrders,
+  SalesFrame,
+  ShopSales,
   MyReservations,
   PayResult,
   Reservation,
@@ -28,6 +30,11 @@ export type {
   PayErrorCode,
   PayResult,
   ProviderState,
+  SaleUpdateFrame,
+  SalesFrame,
+  SalesSnapshotFrame,
+  ShopSale,
+  ShopSales,
   Reservation,
   ReserveErrorCode,
   Sale,
@@ -147,6 +154,40 @@ export function openSaleSocket(saleId: string, handlers: SaleSocketHandlers): ()
   }
 }
 
+export interface SalesSocketHandlers {
+  onFrame: (frame: SalesFrame) => void
+  onOpen?: () => void
+  onClose?: () => void
+}
+
+/**
+ * Подписка на несколько распродаж одним соединением — для дашборда магазина
+ * (ADR-026). Отдельный сокет на каждую распродажу означал бы десятки
+ * соединений на один экран.
+ */
+export function openSalesSocket(
+  saleIds: string[],
+  handlers: SalesSocketHandlers,
+): () => void {
+  const query = saleIds.length > 0 ? `?ids=${saleIds.join(',')}` : ''
+  const socket = new WebSocket(`${API_URL.replace(/^http/, 'ws')}/ws/sales${query}`)
+
+  socket.onopen = () => handlers.onOpen?.()
+  socket.onmessage = (event: MessageEvent<string>) => {
+    try {
+      handlers.onFrame(JSON.parse(event.data) as SalesFrame)
+    } catch {
+      // Мусор в кадре игнорируем: следующий снимок всё равно самодостаточен.
+    }
+  }
+  socket.onclose = () => handlers.onClose?.()
+
+  return () => {
+    socket.onclose = null
+    socket.close()
+  }
+}
+
 export const api = {
   apiUrl: API_URL,
 
@@ -171,4 +212,6 @@ export const api = {
     request<PayResult>(`/api/reservations/${reservationId}/pay`, { method: 'POST', token }),
 
   myOrders: (token: string) => request<MyOrders>('/api/orders/me', { token }),
+
+  shopSales: (token: string) => request<ShopSales>('/api/shop/sales', { token }),
 }

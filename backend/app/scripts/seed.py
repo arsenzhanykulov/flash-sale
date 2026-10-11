@@ -24,13 +24,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_sessionmaker, reset_engine
 
 SHOP_EMAIL = "shop@example.com"
+# Второй магазин со своим товаром: по нему видно, что дашборд не показывает
+# чужие распродажи.
+OTHER_SHOP_EMAIL = "shop2@example.com"
 BUYER_EMAILS = ("buyer1@example.com", "buyer2@example.com")
 
 PRODUCT_NAME = "Беспроводные наушники Flash One"
 PRODUCT_DESCRIPTION = "Активное шумоподавление, 30 часов автономной работы."
 PRODUCT_IMAGE_URL = "https://picsum.photos/seed/flash-one/600/400"
 
+OTHER_PRODUCT_NAME = "Умная колонка Flash Mini"
+OTHER_PRODUCT_DESCRIPTION = "Голосовой помощник и подсветка по музыке."
+OTHER_PRODUCT_IMAGE_URL = "https://picsum.photos/seed/flash-mini/600/400"
+
 PRICE_MINOR = 499_000
+OTHER_PRICE_MINOR = 299_000
 CURRENCY = "KGS"
 
 DEFAULT_QUANTITY = 5
@@ -95,6 +103,8 @@ INSERT_SALE_SQL = text("""
 @dataclass(frozen=True)
 class SeedResult:
     shop_id: UUID
+    other_shop_id: UUID
+    other_sale_id: UUID
     buyer_ids: tuple[UUID, ...]
     product_id: UUID
     sale_id: UUID
@@ -127,6 +137,23 @@ async def seed(
             product_params | {"description": PRODUCT_DESCRIPTION, "image_url": PRODUCT_IMAGE_URL},
         )
 
+    # Распродажа второго магазина: нужна, чтобы проверить, что магазин видит
+    # только свои товары.
+    other_shop_id = await session.scalar(
+        UPSERT_USER_SQL, {"email": OTHER_SHOP_EMAIL, "role": "shop"}
+    )
+    other_product_params = {"shop_id": other_shop_id, "name": OTHER_PRODUCT_NAME}
+    other_product_id = await session.scalar(SELECT_PRODUCT_SQL, other_product_params)
+    if other_product_id is None:
+        other_product_id = await session.scalar(
+            INSERT_PRODUCT_SQL,
+            other_product_params
+            | {
+                "description": OTHER_PRODUCT_DESCRIPTION,
+                "image_url": OTHER_PRODUCT_IMAGE_URL,
+            },
+        )
+
     sale_params = {
         "product_id": product_id,
         "price_minor": PRICE_MINOR,
@@ -143,10 +170,30 @@ async def seed(
             await session.execute(UPDATE_SALE_SQL, sale_params | {"sale_id": reusable_sale_id})
         ).one()
 
+    other_sale_params = {
+        "product_id": other_product_id,
+        "price_minor": OTHER_PRICE_MINOR,
+        "currency": CURRENCY,
+        "quantity": quantity,
+        "start_in": start_in,
+        "end_in": start_in + duration,
+    }
+    other_reusable = await session.scalar(
+        SELECT_REUSABLE_SALE_SQL, {"product_id": other_product_id}
+    )
+    if other_reusable is None:
+        other_sale_row = (await session.execute(INSERT_SALE_SQL, other_sale_params)).one()
+    else:
+        other_sale_row = (
+            await session.execute(UPDATE_SALE_SQL, other_sale_params | {"sale_id": other_reusable})
+        ).one()
+
     await session.commit()
 
     return SeedResult(
         shop_id=shop_id,
+        other_shop_id=other_shop_id,
+        other_sale_id=other_sale_row.id,
         buyer_ids=buyer_ids,
         product_id=product_id,
         sale_id=sale_row.id,
@@ -214,6 +261,7 @@ def main() -> None:
 
     print("Демо-данные готовы.")
     print(f"  магазин:     {SHOP_EMAIL}")
+    print(f"  магазин 2:   {OTHER_SHOP_EMAIL} (своя распродажа, чужого не видит)")
     print(f"  покупатели:  {', '.join(BUYER_EMAILS)}")
     print(f"  товар:       {PRODUCT_NAME} ({result.product_id})")
     print(f"  распродажа:  {result.sale_id} — {'обновлена' if result.sale_reused else 'создана'}")

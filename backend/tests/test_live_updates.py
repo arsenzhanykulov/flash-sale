@@ -18,7 +18,11 @@ from httpx_ws.transport import ASGIWebSocketTransport
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.routes.live import SALE_NOT_FOUND_CODE
+from app.api.routes.live import (
+    MAX_SUBSCRIBED_SALES,
+    SALE_NOT_FOUND_CODE,
+    TOO_MANY_SALES_CODE,
+)
 from app.services.live_updates import SaleChangeListener, SaleHub
 from app.services.reservations import cancel_reservation, create_reservation
 from app.services.sweeper import sweep_expired_once
@@ -321,3 +325,108 @@ async def test_listener_reconnects_and_resends_snapshot(
 async def test_asgi_transport_is_available() -> None:
     """Страховка от молчаливой подмены транспорта обычным ASGITransport."""
     assert issubclass(ASGIWebSocketTransport, ASGITransport)
+
+
+# --- одно соединение на несколько распродаж (ADR-026) ------------------------
+
+
+async def test_multi_subscription_sends_snapshot_for_all_sales(
+    start_listener: ListenerFactory, make_sale: MakeSale
+) -> None:
+    """Первый кадр — массив со всеми запрошенными распродажами."""
+    await start_listener()
+    first = await make_sale(quantity=3)
+    second = await make_sale(quantity=7, sold=2)
+
+    async with open_ws(f"/ws/sales?ids={first},{second}") as websocket:
+        frame = await receive_snapshot(websocket)
+
+    assert frame["type"] == "snapshot"
+    by_id = {sale["sale_id"]: sale for sale in frame["sales"]}
+    assert set(by_id) == {str(first), str(second)}
+    assert by_id[str(first)]["remaining"] == 3
+    assert by_id[str(second)]["remaining"] == 5
+    assert by_id[str(second)]["sold"] == 2
+
+
+async def test_multi_subscription_updates_one_sale_at_a_time(
+    start_listener: ListenerFactory,
+    session: AsyncSession,
+    make_sale: MakeSale,
+) -> None:
+    """Резерв в одной распродаже даёт update только по ней."""
+    await start_listener()
+    first = await make_sale(quantity=3)
+    second = await make_sale(quantity=3)
+    user_id = await create_buyer(session)
+
+    async with open_ws(f"/ws/sales?ids={first},{second}") as websocket:
+        assert (await receive_snapshot(websocket))["type"] == "snapshot"
+
+        await create_reservation(session, sale_id=second, user_id=user_id)
+
+        frame = await receive_snapshot(websocket)
+
+    assert frame["type"] == "update"
+    assert frame["sale"]["sale_id"] == str(second)
+    assert frame["sale"]["remaining"] == 2
+    assert frame["sale"]["held"] == 1
+
+
+async def test_multi_subscription_ignores_unknown_ids(
+    start_listener: ListenerFactory, make_sale: MakeSale
+) -> None:
+    """Неизвестный id не ломает соединение — его просто нет в снимке."""
+    await start_listener()
+    known = await make_sale(quantity=3)
+    unknown = uuid4()
+
+    async with open_ws(f"/ws/sales?ids={known},{unknown},не-uuid") as websocket:
+        frame = await receive_snapshot(websocket)
+
+    assert frame["type"] == "snapshot"
+    ids = {sale["sale_id"] for sale in frame["sales"]}
+    assert ids == {str(known)}, "в снимке оказался неизвестный id"
+
+
+async def test_multi_subscription_rejects_too_many_ids(
+    start_listener: ListenerFactory,
+) -> None:
+    """Сверх лимита соединение закрывается с понятной причиной."""
+    await start_listener()
+    too_many = ",".join(str(uuid4()) for _ in range(MAX_SUBSCRIBED_SALES + 1))
+
+    with pytest.raises((WebSocketDisconnect, BaseExceptionGroup)) as closed:
+        async with open_ws(f"/ws/sales?ids={too_many}") as websocket:
+            await receive_snapshot(websocket, timeout=SILENCE_TIMEOUT)
+
+    disconnect = find_disconnect(closed.value)
+    assert disconnect is not None, f"ожидалось закрытие, получено {closed.value!r}"
+    assert disconnect.code == TOO_MANY_SALES_CODE
+    assert str(MAX_SUBSCRIBED_SALES) in (disconnect.reason or "")
+
+
+async def test_multi_subscription_at_limit_is_accepted(
+    start_listener: ListenerFactory, make_sale: MakeSale
+) -> None:
+    """Ровно лимит — всё ещё допустимо."""
+    await start_listener()
+    known = await make_sale(quantity=3)
+    filler = ",".join(str(uuid4()) for _ in range(MAX_SUBSCRIBED_SALES - 1))
+
+    async with open_ws(f"/ws/sales?ids={known},{filler}") as websocket:
+        frame = await receive_snapshot(websocket)
+
+    assert {sale["sale_id"] for sale in frame["sales"]} == {str(known)}
+
+
+async def test_multi_subscription_without_ids_is_empty(
+    start_listener: ListenerFactory,
+) -> None:
+    """Пустой список: соединение живёт, снимок пустой."""
+    await start_listener()
+
+    async with open_ws("/ws/sales") as websocket:
+        frame = await receive_snapshot(websocket)
+
+    assert frame == {"type": "snapshot", "sales": []}

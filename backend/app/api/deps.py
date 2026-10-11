@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
 from app.core.security import InvalidToken, decode_access_token
+from app.models import UserRole
 from app.services.auth import AuthenticatedUser, get_user_by_id
 
 # auto_error=False: со включённым автоответом отсутствие заголовка даёт 403,
@@ -45,3 +46,19 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
+
+
+async def get_current_shop(current_user: CurrentUser) -> AuthenticatedUser:
+    """Текущий пользователь, если это магазин.
+
+    403, а не 404: покупатель аутентифицирован, просто раздел не для него.
+    """
+    if current_user.role != UserRole.SHOP.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Раздел доступен только магазинам",
+        )
+    return current_user
+
+
+CurrentShop = Annotated[AuthenticatedUser, Depends(get_current_shop)]

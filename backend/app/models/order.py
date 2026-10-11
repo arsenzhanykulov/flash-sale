@@ -1,6 +1,6 @@
 from enum import StrEnum
 
-from sqlalchemy import CheckConstraint, ForeignKey
+from sqlalchemy import CheckConstraint, ForeignKey, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import (
@@ -27,6 +27,13 @@ class Order(Base):
     __table_args__ = (
         CheckConstraint(status_in("status", OrderStatus), name="status_known"),
         CheckConstraint("amount_minor > 0", name="amount_positive"),
+        # Выручка магазина — сумма оплаченных заказов по распродаже (ADR-026).
+        # Индекс частичный: pending_payment и failed в выручку не входят.
+        Index(
+            "ix_orders_paid_sale_id",
+            "sale_id",
+            postgresql_where=text("status = 'paid'"),
+        ),
     )
 
     id: Mapped[uuid_pk]

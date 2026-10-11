@@ -117,3 +117,43 @@ export type PayErrorCode =
   | 'payment_failed'
   | 'sale_ended'
   | 'sale_not_payable'
+
+export interface ShopSale {
+  id: string
+  product_id: string
+  product_name: string
+  price_minor: number
+  currency: string
+  quantity: number
+  sold: number
+  held: number
+  remaining: number
+  status: SaleStatus
+  start_at: string
+  end_at: string
+  closed_at: string | null
+  /** Заполняется только после закрытия распродажи. */
+  unsold: number | null
+  /** Сумма оплаченных заказов: pending_payment и failed не считаются. */
+  revenue_minor: number
+  paid_orders_count: number
+}
+
+export interface ShopSales {
+  server_time: string
+  sales: ShopSale[]
+}
+
+/** Первый кадр мульти-подписки: состояние всех запрошенных распродаж. */
+export interface SalesSnapshotFrame {
+  type: 'snapshot'
+  sales: SaleSnapshot[]
+}
+
+/** Обновление — всегда по одной распродаже. */
+export interface SaleUpdateFrame {
+  type: 'update'
+  sale: SaleSnapshot
+}
+
+export type SalesFrame = SalesSnapshotFrame | SaleUpdateFrame
