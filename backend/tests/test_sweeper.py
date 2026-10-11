@@ -13,7 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.reservations import cancel_reservation, create_reservation
-from app.services.sweeper import sweep_expired_once
+from app.services.sweeper import expire_holds_of_sale, sweep_expired_once
 from tests.conftest import (
     CONCURRENT_PARTICIPANTS,
     MakeSale,
@@ -91,7 +91,9 @@ async def test_expired_hold_is_released(session: AsyncSession, make_sale: MakeSa
     _, _, held_before = await read_counters(session, sale_id)
     assert held_before == 1
 
-    released = await sweep_expired_once(session)
+    # По своей распродаже: sweep_expired_once идёт по всей базе, где лежат
+    # брони других тестов, и глобальное число ничего не доказывало бы.
+    released = await expire_holds_of_sale(session, sale_id)
 
     assert released == 1
     assert await reservation_status(session, reservation_id) == "expired"
@@ -108,7 +110,7 @@ async def test_fresh_hold_is_untouched(session: AsyncSession, make_sale: MakeSal
         session, sale_id, expires_at="now() + interval '10 minutes'"
     )
 
-    released = await sweep_expired_once(session)
+    released = await expire_holds_of_sale(session, sale_id)
 
     assert released == 0
     assert await reservation_status(session, reservation_id) == "held"
@@ -126,7 +128,7 @@ async def test_paying_is_untouched_even_when_expired(
         session, sale_id, status="paying", expires_at="now() - interval '1 hour'"
     )
 
-    released = await sweep_expired_once(session)
+    released = await expire_holds_of_sale(session, sale_id)
 
     assert released == 0
     assert await reservation_status(session, reservation_id) == "paying"
@@ -146,9 +148,12 @@ async def test_several_sales_in_one_pass(session: AsyncSession, make_sale: MakeS
     # Третья распродажа: бронь ещё живёт, трогать нельзя.
     fresh = await add_reservation(session, third, expires_at="now() + interval '5 minutes'")
 
+    # Один проход обрабатывает все распродажи сразу. Точное число не
+    # проверяем: в базе лежат брони других тестов, поэтому сверяем >= своих
+    # трёх, а главное — счётчики каждой распродажи ниже.
     released = await sweep_expired_once(session)
 
-    assert released == 3, f"вернулось {released} единиц вместо 3"
+    assert released >= 3, f"вернулось {released} единиц, ожидалось минимум 3"
     for sale_id, expected_held in ((first, 0), (second, 0), (third, 1)):
         _, sold, held = await read_counters(session, sale_id)
         assert (sold, held) == (0, expected_held), f"распродажа {sale_id}: held={held}"
