@@ -7,6 +7,41 @@ README — вход за пять минут. Здесь то, что нужно
 Решения с альтернативами — [DECISIONS.md](DECISIONS.md), схема —
 [DATA_MODEL.md](DATA_MODEL.md), хроника — [DEVLOG.md](DEVLOG.md).
 
+## Демо-данные: параметры seed
+
+```bash
+make seed    # docker compose exec backend python -m app.scripts.seed
+```
+
+По умолчанию: распродажа на 5 единиц, старт через 2 минуты, длительность
+30 минут, по одной распродаже у каждого из двух магазинов.
+
+| Аргумент | Единицы | По умолчанию | Что принимает |
+|---|---|---|---|
+| `--quantity` | штуки | 5 | не меньше 1 |
+| `--start-in` | **минуты** | 2 | `0` — стартует сейчас; отрицательное — уже идёт |
+| `--duration` | **минуты** | 30 | не меньше 1; `0` отклоняется с сообщением, потому что `CHECK ck_sales_period_valid` требует `end_at > start_at` |
+
+```bash
+# распродажа уже идёт прямо сейчас
+docker compose exec backend python -m app.scripts.seed --start-in 0 --duration 30
+
+# стартует через минуту: видно таймер и как включается кнопка «Купить»
+docker compose exec backend python -m app.scripts.seed --start-in 1 --duration 10
+
+# одна единица — чтобы увидеть гонку двух покупателей
+docker compose exec backend python -m app.scripts.seed --start-in 0 --duration 90 --quantity 1
+
+# короткая распродажа: через минуту сама закроется, видно статус «Завершена»
+docker compose exec backend python -m app.scripts.seed --start-in 0 --duration 1
+```
+
+**Повторный запуск безопасен.** Пользователи и товар переиспользуются.
+Распродажа **своего seed-товара** обновляется под новые параметры, если по ней
+ещё нет броней; если брони есть, трогать её нельзя — создаётся новая, поэтому
+после нескольких прогонов с покупками распродаж становится больше. Чужие
+распродажи seed не трогает никогда. Полный сброс — `docker compose down -v`.
+
 ## API
 
 Живая документация — Swagger на http://localhost:8000/docs.
