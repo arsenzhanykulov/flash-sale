@@ -2,7 +2,7 @@
 # это ровно та команда, что написана ниже. Их же можно набирать руками,
 # если make не установлен (см. README).
 
-.PHONY: up down seed race test lint logs
+.PHONY: up down seed race load test lint logs
 
 ## up: собрать образы и поднять все сервисы, дождавшись готовности
 # --wait: не возвращать управление, пока healthcheck-и не зелёные. Без него
@@ -22,6 +22,11 @@ seed:
 ## race: два покупателя жмут «Купить» одновременно — увидеть гонку за единицу
 race:
 	docker compose exec backend python -m app.scripts.race
+
+## load: нагрузочный прогон — 200 покупателей одновременно на 10 единиц
+# Ненулевой код выхода при оверсейле, оставшихся held или расхождении писем.
+load:
+	docker compose exec backend python -m app.scripts.load
 
 ## test: тесты бэкенда на реальном Postgres и тесты платёжной заглушки
 test:

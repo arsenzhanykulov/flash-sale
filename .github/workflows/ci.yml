@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Новый пуш в ту же ветку отменяет предыдущий прогон: незачем держать
+# раннеры на устаревшем коммите.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Бэкенд — тесты на реальном Postgres
+    runs-on: ubuntu-latest
+    # Job идёт внутри того же образа, что и dev-контейнер. Тогда сервисы
+    # доступны по именам (postgres, mailpit) — ровно как в docker compose,
+    # и тесты не нужно править под CI.
+    container: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: flash_sale
+          POSTGRES_PASSWORD: flash_sale
+          POSTGRES_DB: flash_sale
+        options: >-
+          --health-cmd "pg_isready -U flash_sale -d flash_sale"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      # Mailpit сервисом, а не пропуском теста: тест доставки письма проверяет
+      # настоящий SMTP и читает письмо через API Mailpit. Пропустить его в CI
+      # означало бы потерять именно то, ради чего он написан.
+      mailpit:
+        image: axllent/mailpit:v1.31.4
+        env:
+          MP_SMTP_AUTH_ACCEPT_ANY: 1
+          MP_SMTP_AUTH_ALLOW_INSECURE: 1
+        options: >-
+          --health-cmd "/mailpit readyz"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Тесты поднимают свою базу: имя рабочей + _test, и пересоздают её с нуля.
+      DATABASE_URL: postgresql+asyncpg://flash_sale:flash_sale@postgres:5432/flash_sale
+      JWT_SECRET: ci-only-secret
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      # В slim-образе git нет, а без него actions/checkout уходит на REST API.
+      - name: Поставить git
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git
+        working-directory: .
+
+      - uses: actions/checkout@v4
+
+      # --frozen: ставим ровно то, что в uv.lock. Разъехавшийся lock — ошибка,
+      # а не повод молча обновить зависимости.
+      - name: Зависимости
+        run: uv sync --frozen
+
+      - name: ruff (линт)
+        run: uv run ruff check .
+
+      - name: ruff (формат)
+        run: uv run ruff format --check .
+
+      - name: Миграции и тесты
+        run: uv run pytest -q
+
+  payment-stub:
+    name: Платёжная заглушка — свои тесты
+    runs-on: ubuntu-latest
+    container: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+    defaults:
+      run:
+        working-directory: payment-stub
+
+    steps:
+      - name: Поставить git
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git
+        working-directory: .
+
+      - uses: actions/checkout@v4
+
+      # Заглушка изолирована (ADR-021): своё окружение, своё хранилище SQLite,
+      # Postgres ей не нужен.
+      - name: Зависимости
+        run: uv sync --frozen
+
+      - name: ruff (линт)
+        run: uv run ruff check .
+
+      - name: ruff (формат)
+        run: uv run ruff format --check .
+
+      - name: Тесты
+        run: uv run pytest -q
+
+  frontend:
+    name: Фронтенд — линт, типы, сборка
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Та же мажорная версия, что в frontend/Dockerfile.
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Зависимости
+        run: npm ci
+
+      - name: Линт
+        run: npm run lint
+
+      - name: Проверка типов
+        run: npm run typecheck
+
+      - name: Сборка
+        run: npm run build

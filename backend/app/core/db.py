@@ -26,6 +26,11 @@ def get_engine() -> AsyncEngine:
         echo=settings.db_echo,
         # Иначе /health мог бы ответить ok по мёртвому соединению из пула.
         pool_pre_ping=True,
+        # Предел одновременных запросов к БД: pool_size + max_overflow.
+        # В настройках, а не дефолтами SQLAlchemy: нагрузочный скрипт упирался
+        # в 15 соединений раньше, чем в саму БД.
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
     )
 
 
