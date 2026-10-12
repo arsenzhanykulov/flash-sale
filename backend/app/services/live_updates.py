@@ -61,17 +61,27 @@ class SaleHub:
         self._wakeup = asyncio.Event()
 
     @asynccontextmanager
-    async def subscribe(self, sale_id: UUID) -> AsyncIterator[Subscriber]:
+    async def subscribe(self, *sale_ids: UUID) -> AsyncIterator[Subscriber]:
+        """Одна очередь на несколько распродаж.
+
+        Дашборд магазина смотрит десятки распродаж сразу: отдельное соединение
+        на каждую означало бы столько же сокетов, задач и очередей (ADR-026).
+        Хаб и так хранит подписчиков по id, поэтому одна очередь просто
+        регистрируется под несколькими ключами.
+        """
         queue: Subscriber = asyncio.Queue(maxsize=1)
-        self._subscribers.setdefault(sale_id, set()).add(queue)
+        unique_ids = set(sale_ids)
+        for sale_id in unique_ids:
+            self._subscribers.setdefault(sale_id, set()).add(queue)
         try:
             yield queue
         finally:
-            listeners = self._subscribers.get(sale_id)
-            if listeners is not None:
-                listeners.discard(queue)
-                if not listeners:
-                    del self._subscribers[sale_id]
+            for sale_id in unique_ids:
+                listeners = self._subscribers.get(sale_id)
+                if listeners is not None:
+                    listeners.discard(queue)
+                    if not listeners:
+                        del self._subscribers[sale_id]
 
     def mark_dirty(self, sale_id: UUID) -> None:
         """Вызывается из колбэка asyncpg — поэтому только синхронная работа."""

@@ -426,3 +426,85 @@ input:focus {
 .order .meta {
   margin-bottom: 0;
 }
+
+.shop__head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.shop__head h1 {
+  margin: 0;
+}
+
+/* Таблица шире экрана скроллится внутри себя, а не растягивает страницу. */
+.table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.shop-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+
+.shop-table th,
+.shop-table td {
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.shop-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.shop-table th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.shop-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.shop-table__product {
+  font-weight: 600;
+}
+
+.shop-table__product:hover {
+  color: var(--accent);
+}
+
+.shop-table__window {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+/* Изменившаяся ячейка подсвечивается на секунду: иначе смена цифры
+   в таблице проходит незаметно. */
+.cell--changed {
+  animation: cell-flash 1.2s ease-out;
+}
+
+@keyframes cell-flash {
+  0% {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  100% {
+    background: transparent;
+    color: inherit;
+  }
+}
