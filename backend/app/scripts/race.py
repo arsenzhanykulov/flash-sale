@@ -37,7 +37,11 @@ async def buy(client: httpx.AsyncClient, sale_id: str, email: str, token: str) -
 
     detail = response.json().get("detail")
     reason = detail.get("code") if isinstance(detail, dict) else detail
-    print(f"  {email:24} {response.status_code}  {reason}")
+    hint = ""
+    if reason == "already_reserved":
+        # Не гонка, а прошлый прогон: бронь этого покупателя всё ещё жива.
+        hint = "  ← бронь с прошлого раза; отмените её или пересоздайте распродажу"
+    print(f"  {email:24} {response.status_code}  {reason}{hint}")
 
 
 async def run(emails: list[str]) -> None:
@@ -49,10 +53,22 @@ async def run(emails: list[str]) -> None:
             print("  python -m app.scripts.seed --start-in 0 --duration 90 --quantity 1")
             return
 
-        sale = active[0]
+        # Самая свежая активная, а не первая попавшаяся: скрипт запускают
+        # сразу после seed, и ожидают гонку именно по только что созданной
+        # распродаже. Первая в списке может оказаться прошлой, где у этих
+        # покупателей уже есть брони, — и вместо гонки видно already_reserved.
+        sale = max(active, key=lambda item: item["start_at"])
         print(
             f"распродажа {sale['id']}: quantity={sale['quantity']}, remaining={sale['remaining']}\n"
         )
+
+        if sale["remaining"] > 1:
+            print(
+                f"  ! в распродаже свободно {sale['remaining']} единиц — "
+                "гонки за последнюю не будет, оба покупателя получат бронь.\n"
+                "    Чтобы увидеть гонку, пересоздайте распродажу на одну единицу:\n"
+                "      python -m app.scripts.seed --start-in 0 --duration 90 --quantity 1\n"
+            )
 
         tokens = [await login(client, email) for email in emails]
 
